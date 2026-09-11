@@ -8,15 +8,17 @@ use App\Support\ApiResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Carbon;
 use Illuminate\Validation\Rules\Password as PasswordRule;
+use Throwable;
 
 class AuthController extends Controller
 {
     public function register(Request $request)
     {
-        $data = $request->validate(['first_name' => 'required|string|max:100', 'last_name' => 'required|string|max:100', 'email' => 'required|email', 'phone' => 'required|string|max:30', 'role' => 'required|in:seeker,owner,tenant,organizer', 'password' => ['required', 'confirmed', PasswordRule::min(8)]]);
+        $data = $request->validate(['first_name' => 'required|string|max:100', 'last_name' => 'required|string|max:100', 'email' => 'required|email', 'phone' => 'required|string|max:30', 'role' => 'required|in:seeker,owner,organizer', 'password' => ['required', 'confirmed', PasswordRule::min(8)]]);
         $data['email'] = strtolower(trim($data['email']));
         $data['phone'] = trim($data['phone']);
 
@@ -44,21 +46,35 @@ class AuthController extends Controller
         }
 
         $otp = (string) random_int(100000, 999999);
-        DB::table('pending_registrations')->updateOrInsert(
-            ['email' => $data['email']],
-            [
-                'first_name' => $data['first_name'],
-                'last_name' => $data['last_name'],
-                'phone' => $data['phone'],
-                'role' => $data['role'],
-                'password' => Hash::make($data['password']),
-                'otp_hash' => Hash::make($otp),
-                'expires_at' => now()->addMinutes(10),
-                'created_at' => now(),
-                'updated_at' => now(),
-            ]
-        );
-        $this->sendRegistrationOtp($data['email'], $data['first_name'], $otp);
+        try {
+            DB::transaction(function () use ($data, $otp): void {
+                DB::table('pending_registrations')->updateOrInsert(
+                    ['email' => $data['email']],
+                    [
+                        'first_name' => $data['first_name'],
+                        'last_name' => $data['last_name'],
+                        'phone' => $data['phone'],
+                        'role' => $data['role'],
+                        'password' => Hash::make($data['password']),
+                        'otp_hash' => Hash::make($otp),
+                        'expires_at' => now()->addMinutes(10),
+                        'created_at' => now(),
+                        'updated_at' => now(),
+                    ]
+                );
+                $this->sendRegistrationOtp($data['email'], $data['first_name'], $otp);
+            });
+        } catch (Throwable $exception) {
+            Log::error('Échec de la préparation ou de l’envoi de l’OTP d’inscription.', [
+                'email' => $data['email'],
+                'exception' => $exception,
+            ]);
+
+            return ApiResponse::error(
+                'Le code de vérification n’a pas pu être envoyé. Vérifiez la configuration e-mail et la migration pending_registrations.',
+                503
+            );
+        }
 
         return ApiResponse::success(['email' => $data['email'], 'sandbox_otp' => app()->environment(['local', 'testing']) ? $otp : null], 'Code de vérification envoyé. Le compte sera créé après validation.', 201);
     }

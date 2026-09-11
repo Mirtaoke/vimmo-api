@@ -31,7 +31,7 @@ class AuthApiTest extends TestCase
 
     public function test_registered_user_can_verify_the_random_otp(): void
     {
-        $response = $this->postJson('/api/auth/register', ['first_name' => 'Awa', 'last_name' => 'Dossou', 'email' => 'awa@example.com', 'phone' => '97003344', 'role' => 'tenant', 'password' => 'password', 'password_confirmation' => 'password'])->assertCreated();
+        $response = $this->postJson('/api/auth/register', ['first_name' => 'Awa', 'last_name' => 'Dossou', 'email' => 'awa@example.com', 'phone' => '97003344', 'role' => 'seeker', 'password' => 'password', 'password_confirmation' => 'password'])->assertCreated();
         $otp = $response->json('data.sandbox_otp');
         $this->assertDatabaseMissing('users', ['email' => 'awa@example.com']);
         $this->postJson('/api/auth/verify-otp', ['email' => 'awa@example.com', 'code' => $otp])->assertOk()->assertJsonPath('success', true);
@@ -48,6 +48,16 @@ class AuthApiTest extends TestCase
 
         $this->assertDatabaseCount('pending_registrations', 1);
         $this->assertDatabaseMissing('users', ['email' => 'pending@example.com']);
+    }
+
+    public function test_tenant_cannot_create_an_account_from_public_registration(): void
+    {
+        $this->postJson('/api/auth/register', ['first_name' => 'Lina', 'last_name' => 'Kora', 'email' => 'lina@example.com', 'phone' => '97007788', 'role' => 'tenant', 'password' => 'password', 'password_confirmation' => 'password'])
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors('role');
+
+        $this->assertDatabaseMissing('users', ['email' => 'lina@example.com']);
+        $this->assertDatabaseMissing('pending_registrations', ['email' => 'lina@example.com']);
     }
 
     public function test_user_can_reset_password_with_emailed_otp(): void
