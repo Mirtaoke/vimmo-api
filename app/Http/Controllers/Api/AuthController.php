@@ -9,17 +9,58 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Mail;
+use Illuminate\Support\Carbon;
 use Illuminate\Validation\Rules\Password as PasswordRule;
 
 class AuthController extends Controller
 {
     public function register(Request $request)
     {
-        $data = $request->validate(['first_name' => 'required|string|max:100', 'last_name' => 'required|string|max:100', 'email' => 'required|email|unique:users,email', 'phone' => 'required|string|max:30|unique:users,phone', 'role' => 'required|in:seeker,owner,tenant,organizer', 'password' => ['required', 'confirmed', PasswordRule::min(8)]]);
-        $user = User::create([...$data, 'name' => $data['first_name'].' '.$data['last_name'], 'password' => Hash::make($data['password'])]);
-        $otp = $this->issueOtp($user);
+        $data = $request->validate(['first_name' => 'required|string|max:100', 'last_name' => 'required|string|max:100', 'email' => 'required|email', 'phone' => 'required|string|max:30', 'role' => 'required|in:seeker,owner,tenant,organizer', 'password' => ['required', 'confirmed', PasswordRule::min(8)]]);
+        $data['email'] = strtolower(trim($data['email']));
+        $data['phone'] = trim($data['phone']);
 
-        return ApiResponse::success(['user' => $user, 'token' => $user->createToken('vimmo-mobile')->plainTextToken, 'sandbox_otp' => app()->environment(['local', 'testing']) ? $otp : null], 'Compte créé. Consultez votre e-mail pour saisir le code de vérification.', 201);
+        $legacy = User::where('email', $data['email'])->orWhere('phone', $data['phone'])->first();
+        if ($legacy && $legacy->email_verified_at) {
+            $field = $legacy->email === $data['email'] ? 'email' : 'phone';
+            return ApiResponse::error(
+                $field === 'email' ? 'Cette adresse e-mail est déjà utilisée.' : 'Ce numéro de téléphone est déjà utilisé.',
+                422,
+                [$field => [$field === 'email' ? 'Cette adresse e-mail est déjà utilisée.' : 'Ce numéro de téléphone est déjà utilisé.']]
+            );
+        }
+        if ($legacy) {
+            $legacy->tokens()->delete();
+            DB::table('otp_codes')->where('user_id', $legacy->id)->delete();
+            $legacy->delete();
+        }
+
+        $pendingPhone = DB::table('pending_registrations')->where('phone', $data['phone'])->where('email', '!=', $data['email'])->first();
+        if ($pendingPhone && now()->lt(Carbon::parse($pendingPhone->expires_at))) {
+            return ApiResponse::error('Ce numéro est déjà associé à une inscription en cours.', 422, ['phone' => ['Inscription en cours.']]);
+        }
+        if ($pendingPhone) {
+            DB::table('pending_registrations')->where('id', $pendingPhone->id)->delete();
+        }
+
+        $otp = (string) random_int(100000, 999999);
+        DB::table('pending_registrations')->updateOrInsert(
+            ['email' => $data['email']],
+            [
+                'first_name' => $data['first_name'],
+                'last_name' => $data['last_name'],
+                'phone' => $data['phone'],
+                'role' => $data['role'],
+                'password' => Hash::make($data['password']),
+                'otp_hash' => Hash::make($otp),
+                'expires_at' => now()->addMinutes(10),
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]
+        );
+        $this->sendRegistrationOtp($data['email'], $data['first_name'], $otp);
+
+        return ApiResponse::success(['email' => $data['email'], 'sandbox_otp' => app()->environment(['local', 'testing']) ? $otp : null], 'Code de vérification envoyé. Le compte sera créé après validation.', 201);
     }
 
     public function login(Request $request)
@@ -131,29 +172,53 @@ class AuthController extends Controller
 
     public function verifyOtp(Request $request)
     {
-        $data = $request->validate(['code' => 'required|digits:6']);
-        $otp = DB::table('otp_codes')->where('user_id', $request->user()->id)->where('purpose', 'registration')->whereNull('used_at')->where('expires_at', '>', now())->latest()->first();
-        if (! $otp || ! Hash::check($data['code'], $otp->code_hash)) {
+        $data = $request->validate(['email' => 'required|email', 'code' => 'required|digits:6']);
+        $pending = DB::table('pending_registrations')->where('email', strtolower(trim($data['email'])))->first();
+        if (! $pending || now()->gte(Carbon::parse($pending->expires_at)) || ! Hash::check($data['code'], $pending->otp_hash)) {
             return ApiResponse::error('Code incorrect ou expiré.', 422);
         }
-        DB::transaction(function () use ($request, $otp) {
-            DB::table('otp_codes')->where('id', $otp->id)->update(['used_at' => now(), 'updated_at' => now()]);
-            $request->user()->update([
+        $user = DB::transaction(function () use ($pending) {
+            $user = User::create([
+                'first_name' => $pending->first_name,
+                'last_name' => $pending->last_name,
+                'name' => $pending->first_name.' '.$pending->last_name,
+                'email' => $pending->email,
+                'phone' => $pending->phone,
+                'role' => $pending->role,
+                'password' => $pending->password,
                 'email_verified_at' => now(),
                 'phone_verified_at' => now(),
             ]);
+            DB::table('pending_registrations')->where('id', $pending->id)->delete();
+            return $user;
         });
 
-        $request->user()->currentAccessToken()?->delete();
-
-        return ApiResponse::success($request->user()->fresh(), 'Adresse e-mail vérifiée. Vous pouvez maintenant vous connecter.');
+        return ApiResponse::success($user, 'Adresse e-mail vérifiée et compte créé. Vous pouvez maintenant vous connecter.');
     }
 
     public function resendOtp(Request $request)
     {
-        $otp = $this->issueOtp($request->user(), 'registration');
+        $data = $request->validate(['email' => 'required|email']);
+        $pending = DB::table('pending_registrations')->where('email', strtolower(trim($data['email'])))->first();
+        if (! $pending) {
+            return ApiResponse::error('Aucune inscription en attente pour cette adresse e-mail.', 404);
+        }
+        $otp = (string) random_int(100000, 999999);
+        DB::table('pending_registrations')->where('id', $pending->id)->update([
+            'otp_hash' => Hash::make($otp),
+            'expires_at' => now()->addMinutes(10),
+            'updated_at' => now(),
+        ]);
+        $this->sendRegistrationOtp($pending->email, $pending->first_name, $otp);
 
         return ApiResponse::success(['sandbox_otp' => app()->environment(['local', 'testing']) ? $otp : null], 'Un nouveau code a été envoyé.');
+    }
+
+    private function sendRegistrationOtp(string $email, string $firstName, string $code): void
+    {
+        Mail::raw("Bonjour {$firstName},\n\nVotre code de vérification VIMMO est : {$code}\n\nCe code expire dans 10 minutes. Votre compte ne sera créé qu'après validation de ce code.", function ($message) use ($email): void {
+            $message->to($email)->subject('Votre code de vérification VIMMO');
+        });
     }
 
     private function issueOtp(User $user, string $purpose = 'registration'): string

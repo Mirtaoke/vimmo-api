@@ -28,6 +28,8 @@ Route::prefix('auth')->middleware('throttle:10,1')->group(function () {
     Route::post('/login', [AuthController::class, 'login']);
     Route::post('/forgot-password', [AuthController::class, 'forgot']);
     Route::post('/reset-password', [AuthController::class, 'reset']);
+    Route::post('/verify-otp', [AuthController::class, 'verifyOtp'])->middleware('throttle:6,1');
+    Route::post('/resend-otp', [AuthController::class, 'resendOtp'])->middleware('throttle:3,1');
 });
 
 Route::middleware('auth:sanctum')->group(function () {
@@ -39,8 +41,6 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::delete('/auth/sessions', [AuthController::class, 'revokeOtherSessions']);
     Route::put('/auth/profile', [AuthController::class, 'update']);
     Route::put('/auth/password', [AuthController::class, 'password']);
-    Route::post('/auth/verify-otp', [AuthController::class, 'verifyOtp'])->middleware('throttle:6,1');
-    Route::post('/auth/resend-otp', [AuthController::class, 'resendOtp'])->middleware('throttle:3,1');
     Route::get('/audit-logs', [AuditController::class, 'index']);
     Route::get('/favorites', [MarketplaceController::class, 'favorites']);
     Route::post('/listings/{listing}/favorite', [MarketplaceController::class, 'favorite']);
