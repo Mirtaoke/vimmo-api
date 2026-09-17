@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Models\User;
 use App\Support\ApiResponse;
+use Illuminate\Database\QueryException;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
@@ -12,6 +13,7 @@ use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Carbon;
 use Illuminate\Validation\Rules\Password as PasswordRule;
+use Symfony\Component\Mailer\Exception\TransportExceptionInterface;
 use Throwable;
 
 class AuthController extends Controller
@@ -64,14 +66,34 @@ class AuthController extends Controller
                 );
                 $this->sendRegistrationOtp($data['email'], $data['first_name'], $otp);
             });
-        } catch (Throwable $exception) {
-            Log::error('Échec de la préparation ou de l’envoi de l’OTP d’inscription.', [
+        } catch (QueryException $exception) {
+            Log::error('Échec de la base de données pendant l’inscription provisoire.', [
                 'email' => $data['email'],
                 'exception' => $exception,
             ]);
 
             return ApiResponse::error(
-                'Le code de vérification n’a pas pu être envoyé. Vérifiez la configuration e-mail et la migration pending_registrations.',
+                'La préparation de l’inscription a échoué côté base de données. Vérifiez que toutes les migrations ont été exécutées.',
+                503
+            );
+        } catch (TransportExceptionInterface $exception) {
+            Log::error('Échec SMTP pendant l’envoi de l’OTP d’inscription.', [
+                'email' => $data['email'],
+                'exception' => $exception,
+            ]);
+
+            return ApiResponse::error(
+                'Le serveur e-mail n’a pas pu envoyer le code de vérification. Vérifiez les paramètres SMTP.',
+                503
+            );
+        } catch (Throwable $exception) {
+            Log::error('Échec inattendu pendant l’inscription provisoire.', [
+                'email' => $data['email'],
+                'exception' => $exception,
+            ]);
+
+            return ApiResponse::error(
+                'L’inscription provisoire n’a pas pu être préparée. Consultez les journaux du serveur.',
                 503
             );
         }
