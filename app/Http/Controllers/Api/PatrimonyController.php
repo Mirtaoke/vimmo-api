@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Mail\PatrimonySharedMail;
 use App\Models\InspectionItem;
 use App\Models\MaintenanceRequest;
 use App\Models\Media;
@@ -12,6 +13,7 @@ use App\Models\User;
 use App\Support\ApiResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 
@@ -107,17 +109,33 @@ class PatrimonyController extends Controller
         $recipient = User::whereRaw('LOWER(email)=?', [Str::lower($data['email'])])->first();
         abort_unless($recipient, 422, 'Aucun compte VIMMO n’existe avec cette adresse e-mail. Demandez au proche de créer son compte ou renseignez une autre adresse.');
         abort_if($recipient->id === $request->user()->id, 422, 'Vous êtes déjà propriétaire de ce bien.');
-        $existing = DB::table('asset_shares')->where(['property_id' => $property->id, 'shared_with_id' => $recipient->id])->first();
-        $values = ['shared_by' => $request->user()->id, 'shared_with_id' => $recipient->id, 'name' => $data['name'], 'email' => $recipient->email, 'permission' => $data['permission'], 'revoked_at' => null, 'updated_at' => now()];
-        if ($existing) {
-            DB::table('asset_shares')->where('id', $existing->id)->update($values);
-            $id = $existing->id;
-        } else {
-            $id = DB::table('asset_shares')->insertGetId([...$values, 'property_id' => $property->id, 'token' => (string) Str::uuid(), 'created_at' => now()]);
-        }
-        DB::table('notifications')->insert(['user_id' => $recipient->id, 'type' => 'patrimony_share', 'title' => 'Un bien est partagé avec vous', 'body' => $property->name.' est maintenant accessible dans votre espace familial.', 'data' => json_encode(['property_id' => $property->id, 'share_id' => $id]), 'created_at' => now(), 'updated_at' => now()]);
+        $permissionLabels = [
+            'view' => 'consultation du bien',
+            'documents' => 'consultation du bien et de ses documents',
+            'contribute' => 'consultation et ajout de contenus',
+            'manage' => 'gestion complète du bien partagé',
+        ];
+        $id = DB::transaction(function () use ($data, $property, $recipient, $request, $permissionLabels): int {
+            $existing = DB::table('asset_shares')->where(['property_id' => $property->id, 'shared_with_id' => $recipient->id])->first();
+            $values = ['shared_by' => $request->user()->id, 'shared_with_id' => $recipient->id, 'name' => $data['name'], 'email' => $recipient->email, 'permission' => $data['permission'], 'revoked_at' => null, 'updated_at' => now()];
+            if ($existing) {
+                DB::table('asset_shares')->where('id', $existing->id)->update($values);
+                $shareId = $existing->id;
+            } else {
+                $shareId = DB::table('asset_shares')->insertGetId([...$values, 'property_id' => $property->id, 'token' => (string) Str::uuid(), 'created_at' => now()]);
+            }
+            DB::table('notifications')->insert(['user_id' => $recipient->id, 'type' => 'patrimony_share', 'title' => 'Un bien est partagé avec vous', 'body' => $property->name.' est maintenant accessible dans votre espace familial.', 'data' => json_encode(['property_id' => $property->id, 'share_id' => $shareId]), 'created_at' => now(), 'updated_at' => now()]);
+            Mail::to($recipient->email)->send(new PatrimonySharedMail(
+                recipientName: $recipient->name,
+                ownerName: $request->user()->name,
+                propertyName: $property->name,
+                permissionLabel: $permissionLabels[$data['permission']],
+            ));
 
-        return ApiResponse::success(DB::table('asset_shares')->find($id), 'Le bien est maintenant partagé avec '.$recipient->name.'.', 201);
+            return $shareId;
+        });
+
+        return ApiResponse::success(DB::table('asset_shares')->find($id), 'Le bien est partagé avec '.$recipient->name.' et un e-mail lui a été envoyé.', 201);
     }
 
     public function revoke(Request $request, int $share)

@@ -2,10 +2,12 @@
 
 namespace Tests\Feature;
 
+use App\Mail\PatrimonySharedMail;
 use App\Models\Media;
 use App\Models\Property;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Mail;
 use Tests\TestCase;
 
 class PatrimonySharingApiTest extends TestCase
@@ -24,12 +26,16 @@ class PatrimonySharingApiTest extends TestCase
 
     public function test_existing_user_receives_shared_property(): void
     {
+        Mail::fake();
         $this->seed();
         $owner = User::where('email', 'proprietaire@vimmo.bj')->firstOrFail();
         $recipient = User::where('email', 'chercheur@vimmo.bj')->firstOrFail();
         $property = Property::where('owner_id', $owner->id)->where('is_private', true)->firstOrFail();
         $this->actingAs($owner)->postJson('/api/patrimony/'.$property->id.'/shares', ['name' => $recipient->name, 'email' => $recipient->email, 'permission' => 'documents'])->assertCreated();
         $this->actingAs($recipient)->getJson('/api/patrimony/shared-with-me')->assertOk()->assertJsonFragment(['id' => $property->id, 'share_permission' => 'documents']);
+        Mail::assertSent(PatrimonySharedMail::class, fn (PatrimonySharedMail $mail): bool => $mail->hasTo($recipient->email)
+            && $mail->propertyName === $property->name
+            && $mail->permissionLabel === 'consultation du bien et de ses documents');
     }
 
     public function test_view_permission_cannot_download_a_private_document(): void

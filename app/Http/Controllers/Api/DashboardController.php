@@ -47,7 +47,6 @@ class DashboardController extends Controller
             $data = [
                 'contract' => $contract,
                 'rent_paid' => (float) DB::table('payments')->join('lease_contracts', 'lease_contracts.id', '=', 'payments.lease_contract_id')->where('lease_contracts.tenant_id', $u->id)->where('payments.status', 'confirmed')->sum('payments.amount'),
-                'unread_messages' => DB::table('conversation_participants')->where('user_id', $u->id)->whereNull('last_read_at')->count(),
                 'pending_payments' => $contractId ? DB::table('payments')->where('lease_contract_id', $contractId)->where('status', 'pending')->count() : 0,
                 'receipts' => $contractId ? DB::table('receipts')->where('lease_contract_id', $contractId)->count() : 0,
                 'pending_inspections' => $contractId ? DB::table('inspections')->where('lease_contract_id', $contractId)->where('status', '!=', 'completed')->count() : 0,
@@ -56,6 +55,21 @@ class DashboardController extends Controller
         } else {
             $data = ['favorites' => DB::table('favorites')->where('user_id', $u->id)->count(), 'saved_searches' => DB::table('saved_searches')->where('user_id', $u->id)->count(), 'visits' => DB::table('visit_requests')->where('requester_id', $u->id)->count()];
         }
+
+        $data['unread_messages'] = DB::table('messages')
+            ->join('conversation_participants', 'conversation_participants.conversation_id', '=', 'messages.conversation_id')
+            ->where('conversation_participants.user_id', $u->id)
+            ->where('messages.sender_id', '!=', $u->id)
+            ->where(function ($query) {
+                $query->whereNull('conversation_participants.last_read_at')
+                    ->orWhereColumn('messages.created_at', '>', 'conversation_participants.last_read_at');
+            })
+            ->distinct()
+            ->count('messages.id');
+        $data['unread_notifications'] = DB::table('notifications')
+            ->where('user_id', $u->id)
+            ->whereNull('read_at')
+            ->count();
 
         return ApiResponse::success($data);
     }

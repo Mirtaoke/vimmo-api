@@ -34,10 +34,46 @@ class RentalController extends Controller
     public function createTenant(Request $r, Unit $unit)
     {
         abort_unless($unit->property()->where('owner_id', $r->user()->id)->exists(), 403);
-        $d = $r->validate(['first_name' => 'required|string', 'last_name' => 'required|string', 'email' => 'required|email|unique:users,email', 'phone' => 'required|string|unique:users,phone']);
-        $tenant = User::create([...$d, 'name' => $d['first_name'].' '.$d['last_name'], 'role' => 'tenant', 'password' => Hash::make('password')]);
+        abort_if($unit->contracts()->where('status', 'active')->exists(), 422, 'Ce logement possède déjà un contrat actif.');
+        $d = $r->validate([
+            'first_name' => 'required|string|max:100',
+            'last_name' => 'required|string|max:100',
+            'email' => 'required|email|unique:users,email',
+            'phone' => 'required|string|max:30|unique:users,phone',
+            'starts_at' => 'required|date',
+            'ends_at' => 'nullable|date|after:starts_at',
+            'rent_amount' => 'required|numeric|min:1',
+            'deposit_amount' => 'nullable|numeric|min:0',
+            'charges_amount' => 'nullable|numeric|min:0',
+            'due_day' => 'required|integer|between:1,28',
+        ]);
 
-        return ApiResponse::success(['tenant' => $tenant, 'default_password' => 'password', 'unit_id' => $unit->id], 'Compte locataire créé.', 201);
+        return DB::transaction(function () use ($d, $r, $unit) {
+            $tenantFields = collect($d)->only(['first_name', 'last_name', 'email', 'phone'])->all();
+            $tenant = User::create([...$tenantFields, 'name' => $d['first_name'].' '.$d['last_name'], 'role' => 'tenant', 'password' => Hash::make('password'), 'email_verified_at' => now(), 'phone_verified_at' => now()]);
+            $contract = LeaseContract::create([
+                'unit_id' => $unit->id,
+                'owner_id' => $r->user()->id,
+                'tenant_id' => $tenant->id,
+                'reference' => 'CTR-'.now()->format('Y').'-'.strtoupper(Str::random(6)),
+                'starts_at' => $d['starts_at'],
+                'ends_at' => $d['ends_at'] ?? null,
+                'rent_amount' => $d['rent_amount'],
+                'deposit_amount' => $d['deposit_amount'] ?? 0,
+                'charges_amount' => $d['charges_amount'] ?? 0,
+                'due_day' => $d['due_day'],
+                'status' => 'active',
+            ]);
+            $start = Carbon::parse($d['starts_at'])->startOfMonth();
+            $end = isset($d['ends_at']) ? Carbon::parse($d['ends_at'])->startOfMonth() : $start->copy()->addMonths(11);
+            while ($start->lte($end)) {
+                RentSchedule::create(['lease_contract_id' => $contract->id, 'period_start' => $start->copy()->startOfMonth(), 'period_end' => $start->copy()->endOfMonth(), 'due_date' => $start->copy()->day((int) $d['due_day']), 'amount' => $d['rent_amount'], 'status' => $start->isFuture() ? 'upcoming' : 'due']);
+                $start->addMonth();
+            }
+            $unit->update(['status' => 'occupied']);
+
+            return ApiResponse::success(['tenant' => $tenant, 'contract' => $contract->load('schedules'), 'default_password' => 'password', 'unit_id' => $unit->id], 'Compte locataire créé et lié au logement.', 201);
+        });
     }
 
     public function storeContract(Request $r)

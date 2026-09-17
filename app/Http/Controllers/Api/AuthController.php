@@ -7,11 +7,11 @@ use App\Models\User;
 use App\Support\ApiResponse;
 use Illuminate\Database\QueryException;
 use Illuminate\Http\Request;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Mail;
-use Illuminate\Support\Carbon;
 use Illuminate\Validation\Rules\Password as PasswordRule;
 use Symfony\Component\Mailer\Exception\TransportExceptionInterface;
 use Throwable;
@@ -27,6 +27,7 @@ class AuthController extends Controller
         $legacy = User::where('email', $data['email'])->orWhere('phone', $data['phone'])->first();
         if ($legacy && $legacy->email_verified_at) {
             $field = $legacy->email === $data['email'] ? 'email' : 'phone';
+
             return ApiResponse::error(
                 $field === 'email' ? 'Cette adresse e-mail est déjà utilisée.' : 'Ce numéro de téléphone est déjà utilisé.',
                 422,
@@ -123,6 +124,15 @@ class AuthController extends Controller
             return ApiResponse::error('Votre adresse e-mail doit être vérifiée avant la connexion.', 403);
         }
 
+        // Compatibilité avec les comptes créés avant l'ajout des champs séparés.
+        if (blank($user->first_name) || blank($user->last_name)) {
+            $parts = preg_split('/\s+/', trim((string) $user->name), 2) ?: [];
+            $user->forceFill([
+                'first_name' => filled($user->first_name) ? $user->first_name : ($parts[0] ?? null),
+                'last_name' => filled($user->last_name) ? $user->last_name : ($parts[1] ?? null),
+            ])->save();
+        }
+
         return ApiResponse::success(['user' => $user, 'token' => $user->createToken('vimmo-mobile')->plainTextToken], 'Connexion réussie.');
     }
 
@@ -162,6 +172,11 @@ class AuthController extends Controller
     public function update(Request $request)
     {
         $data = $request->validate(['first_name' => 'sometimes|string|max:100', 'last_name' => 'sometimes|string|max:100', 'email' => 'sometimes|email|unique:users,email,'.$request->user()->id, 'phone' => 'sometimes|string|max:30|unique:users,phone,'.$request->user()->id, 'preferences' => 'sometimes|array']);
+        $firstName = $data['first_name'] ?? $request->user()->first_name;
+        $lastName = $data['last_name'] ?? $request->user()->last_name;
+        if (array_key_exists('first_name', $data) || array_key_exists('last_name', $data)) {
+            $data['name'] = trim($firstName.' '.$lastName);
+        }
         $request->user()->update($data);
 
         return ApiResponse::success($request->user()->fresh(), 'Profil mis à jour.');
@@ -189,26 +204,26 @@ class AuthController extends Controller
         }
         $resendCount = 0;
         if ($data['resend'] ?? false) {
-                $current = DB::table('otp_codes')
-                    ->where('user_id', $user->id)
-                    ->where('purpose', 'password_reset')
-                    ->whereNull('used_at')
-                    ->latest()
-                    ->first();
-                if ($current) {
-                    $resendCount = (int) $current->resend_count;
-                    if ($resendCount >= 5) {
-                        return ApiResponse::error('Le nombre maximal de renvois a été atteint. Recommencez la récupération.', 429, ['remaining_resends' => 0]);
-                    }
-                    $availableAt = Carbon::parse($current->last_sent_at ?? $current->created_at)->addSeconds(60);
-                    if (now()->lt($availableAt)) {
-                        return ApiResponse::error('Veuillez patienter avant de demander un nouveau code.', 429, [
-                            'retry_after' => max(1, (int) ceil(now()->diffInSeconds($availableAt))),
-                            'remaining_resends' => 5 - $resendCount,
-                        ]);
-                    }
-                    $resendCount++;
+            $current = DB::table('otp_codes')
+                ->where('user_id', $user->id)
+                ->where('purpose', 'password_reset')
+                ->whereNull('used_at')
+                ->latest()
+                ->first();
+            if ($current) {
+                $resendCount = (int) $current->resend_count;
+                if ($resendCount >= 5) {
+                    return ApiResponse::error('Le nombre maximal de renvois a été atteint. Recommencez la récupération.', 429, ['remaining_resends' => 0]);
                 }
+                $availableAt = Carbon::parse($current->last_sent_at ?? $current->created_at)->addSeconds(60);
+                if (now()->lt($availableAt)) {
+                    return ApiResponse::error('Veuillez patienter avant de demander un nouveau code.', 429, [
+                        'retry_after' => max(1, (int) ceil(now()->diffInSeconds($availableAt))),
+                        'remaining_resends' => 5 - $resendCount,
+                    ]);
+                }
+                $resendCount++;
+            }
         }
         $otp = $this->issueOtp($user, 'password_reset', $resendCount);
 
@@ -270,6 +285,7 @@ class AuthController extends Controller
                 'phone_verified_at' => now(),
             ]);
             DB::table('pending_registrations')->where('id', $pending->id)->delete();
+
             return $user;
         });
 
