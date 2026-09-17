@@ -114,6 +114,20 @@ class AuthApiTest extends TestCase
         ])->assertOk();
     }
 
+    public function test_unknown_email_cannot_open_password_reset_otp_step(): void
+    {
+        $this->postJson('/api/auth/forgot-password', [
+            'email' => 'inconnu@example.com',
+        ])->assertNotFound()
+            ->assertJsonPath('success', false)
+            ->assertJsonPath('message', 'Aucun compte n’est associé à cette adresse e-mail.');
+
+        $this->assertDatabaseMissing('otp_codes', [
+            'destination' => 'inconnu@example.com',
+            'purpose' => 'password_reset',
+        ]);
+    }
+
     public function test_password_reset_otp_resend_has_cooldown_and_limit(): void
     {
         $this->seed();

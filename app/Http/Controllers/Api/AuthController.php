@@ -178,10 +178,17 @@ class AuthController extends Controller
     public function forgot(Request $request)
     {
         $data = $request->validate(['email' => 'required|email', 'resend' => 'sometimes|boolean']);
-        $user = User::where('email', $data['email'])->first();
+        $email = strtolower(trim($data['email']));
+        $user = User::where('email', $email)->first();
+        if (! $user) {
+            return ApiResponse::error(
+                'Aucun compte n’est associé à cette adresse e-mail.',
+                404,
+                ['email' => ['Adresse e-mail inconnue.']]
+            );
+        }
         $resendCount = 0;
-        if ($user) {
-            if ($data['resend'] ?? false) {
+        if ($data['resend'] ?? false) {
                 $current = DB::table('otp_codes')
                     ->where('user_id', $user->id)
                     ->where('purpose', 'password_reset')
@@ -202,9 +209,8 @@ class AuthController extends Controller
                     }
                     $resendCount++;
                 }
-            }
-            $otp = $this->issueOtp($user, 'password_reset', $resendCount);
         }
+        $otp = $this->issueOtp($user, 'password_reset', $resendCount);
 
         return ApiResponse::success(
             [
@@ -213,7 +219,7 @@ class AuthController extends Controller
                 'resend_available_in' => 60,
                 'remaining_resends' => max(0, 5 - $resendCount),
             ],
-            'Si cette adresse correspond à un compte, un code de réinitialisation a été envoyé par e-mail.'
+            'Un code de réinitialisation a été envoyé par e-mail.'
         );
     }
 
