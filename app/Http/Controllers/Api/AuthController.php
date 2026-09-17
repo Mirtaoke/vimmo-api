@@ -177,14 +177,42 @@ class AuthController extends Controller
 
     public function forgot(Request $request)
     {
-        $data = $request->validate(['email' => 'required|email']);
+        $data = $request->validate(['email' => 'required|email', 'resend' => 'sometimes|boolean']);
         $user = User::where('email', $data['email'])->first();
+        $resendCount = 0;
         if ($user) {
-            $otp = $this->issueOtp($user, 'password_reset');
+            if ($data['resend'] ?? false) {
+                $current = DB::table('otp_codes')
+                    ->where('user_id', $user->id)
+                    ->where('purpose', 'password_reset')
+                    ->whereNull('used_at')
+                    ->latest()
+                    ->first();
+                if ($current) {
+                    $resendCount = (int) $current->resend_count;
+                    if ($resendCount >= 5) {
+                        return ApiResponse::error('Le nombre maximal de renvois a été atteint. Recommencez la récupération.', 429, ['remaining_resends' => 0]);
+                    }
+                    $availableAt = Carbon::parse($current->last_sent_at ?? $current->created_at)->addSeconds(60);
+                    if (now()->lt($availableAt)) {
+                        return ApiResponse::error('Veuillez patienter avant de demander un nouveau code.', 429, [
+                            'retry_after' => max(1, (int) ceil(now()->diffInSeconds($availableAt))),
+                            'remaining_resends' => 5 - $resendCount,
+                        ]);
+                    }
+                    $resendCount++;
+                }
+            }
+            $otp = $this->issueOtp($user, 'password_reset', $resendCount);
         }
 
         return ApiResponse::success(
-            ['sandbox_otp' => isset($otp) && app()->environment(['local', 'testing']) ? $otp : null],
+            [
+                'sandbox_otp' => isset($otp) && app()->environment(['local', 'testing']) ? $otp : null,
+                'expires_in' => 600,
+                'resend_available_in' => 60,
+                'remaining_resends' => max(0, 5 - $resendCount),
+            ],
             'Si cette adresse correspond à un compte, un code de réinitialisation a été envoyé par e-mail.'
         );
     }
@@ -295,11 +323,11 @@ class AuthController extends Controller
         });
     }
 
-    private function issueOtp(User $user, string $purpose = 'registration'): string
+    private function issueOtp(User $user, string $purpose = 'registration', int $resendCount = 0): string
     {
         $code = (string) random_int(100000, 999999);
         DB::table('otp_codes')->where('user_id', $user->id)->where('purpose', $purpose)->whereNull('used_at')->update(['used_at' => now(), 'updated_at' => now()]);
-        DB::table('otp_codes')->insert(['user_id' => $user->id, 'destination' => $user->email, 'purpose' => $purpose, 'code_hash' => Hash::make($code), 'expires_at' => now()->addMinutes(10), 'created_at' => now(), 'updated_at' => now()]);
+        DB::table('otp_codes')->insert(['user_id' => $user->id, 'destination' => $user->email, 'purpose' => $purpose, 'code_hash' => Hash::make($code), 'resend_count' => $resendCount, 'last_sent_at' => now(), 'expires_at' => now()->addMinutes(10), 'created_at' => now(), 'updated_at' => now()]);
         $subject = $purpose === 'password_reset' ? 'Réinitialisation de votre mot de passe VIMMO' : 'Votre code de vérification VIMMO';
         $action = $purpose === 'password_reset' ? 'réinitialisation de mot de passe' : 'vérification';
         Mail::raw("Bonjour {$user->first_name},\n\nVotre code de {$action} VIMMO est : {$code}\n\nCe code expire dans 10 minutes. Si vous n'êtes pas à l'origine de cette demande, ignorez ce message.", function ($message) use ($user, $subject): void {

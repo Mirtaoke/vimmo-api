@@ -92,7 +92,11 @@ class AuthApiTest extends TestCase
         $this->seed();
         $response = $this->postJson('/api/auth/forgot-password', [
             'email' => 'proprietaire@vimmo.bj',
-        ])->assertOk()->assertJsonPath('success', true);
+        ])->assertOk()
+            ->assertJsonPath('success', true)
+            ->assertJsonPath('data.expires_in', 600)
+            ->assertJsonPath('data.resend_available_in', 60)
+            ->assertJsonPath('data.remaining_resends', 5);
 
         $otp = $response->json('data.sandbox_otp');
         $this->assertMatchesRegularExpression('/^\d{6}$/', $otp);
@@ -108,5 +112,30 @@ class AuthApiTest extends TestCase
             'identifier' => 'proprietaire@vimmo.bj',
             'password' => 'nouveau-password',
         ])->assertOk();
+    }
+
+    public function test_password_reset_otp_resend_has_cooldown_and_limit(): void
+    {
+        $this->seed();
+        $email = 'proprietaire@vimmo.bj';
+        $this->postJson('/api/auth/forgot-password', ['email' => $email])->assertOk();
+
+        $this->postJson('/api/auth/forgot-password', ['email' => $email, 'resend' => true])
+            ->assertTooManyRequests()
+            ->assertJsonPath('errors.remaining_resends', 5);
+
+        $this->travel(61)->seconds();
+        $this->postJson('/api/auth/forgot-password', ['email' => $email, 'resend' => true])
+            ->assertOk()
+            ->assertJsonPath('data.remaining_resends', 4);
+
+        \Illuminate\Support\Facades\DB::table('otp_codes')
+            ->where('purpose', 'password_reset')
+            ->whereNull('used_at')
+            ->update(['resend_count' => 5, 'last_sent_at' => now()->subMinutes(2)]);
+        $this->travel(61)->seconds();
+        $this->postJson('/api/auth/forgot-password', ['email' => $email, 'resend' => true])
+            ->assertTooManyRequests()
+            ->assertJsonPath('errors.remaining_resends', 0);
     }
 }

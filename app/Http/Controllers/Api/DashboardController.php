@@ -13,20 +13,32 @@ class DashboardController extends Controller
     {
         $u = $request->user();
         if ($u->role === 'owner') {
+            $monthStart = now()->startOfMonth();
+            $monthEnd = now()->endOfMonth();
             $ownedUnits = DB::table('units')->join('properties', 'properties.id', '=', 'units.property_id')->where('properties.owner_id', $u->id);
             $contracts = DB::table('lease_contracts')->where('owner_id', $u->id);
+            $ownerPayments = DB::table('payments')->join('lease_contracts', 'lease_contracts.id', '=', 'payments.lease_contract_id')->where('lease_contracts.owner_id', $u->id);
+            $ownerSchedules = DB::table('rent_schedules')->join('lease_contracts', 'lease_contracts.id', '=', 'rent_schedules.lease_contract_id')->where('lease_contracts.owner_id', $u->id);
+            $monthSchedules = (clone $ownerSchedules)->whereBetween('rent_schedules.period_start', [$monthStart->toDateString(), $monthEnd->toDateString()]);
+            $rentDueMonth = (float) (clone $monthSchedules)->sum('rent_schedules.amount');
+            $rentCollectedForMonth = (float) (clone $monthSchedules)->sum('rent_schedules.paid_amount');
             $data = [
                 'properties' => DB::table('properties')->where('owner_id', $u->id)->where('is_private', false)->count(),
                 'private_properties' => DB::table('properties')->where('owner_id', $u->id)->where('is_private', true)->count(),
                 'units' => (clone $ownedUnits)->count(),
                 'occupied_units' => (clone $ownedUnits)->where('units.status', 'occupied')->count(),
                 'tenants' => (clone $contracts)->where('status', 'active')->distinct('tenant_id')->count('tenant_id'),
+                'active_contracts' => (clone $contracts)->where('status', 'active')->count(),
                 'active_listings' => DB::table('listings')->where('owner_id', $u->id)->where('status', 'published')->count(),
-                'pending_payments' => DB::table('payments')->join('lease_contracts', 'lease_contracts.id', '=', 'payments.lease_contract_id')->where('lease_contracts.owner_id', $u->id)->where('payments.status', 'pending')->count(),
+                'pending_payments' => (clone $ownerPayments)->where('payments.status', 'pending')->count(),
                 'open_maintenance' => DB::table('maintenance_requests')->join('units', 'units.id', '=', 'maintenance_requests.unit_id')->join('properties', 'properties.id', '=', 'units.property_id')->where('properties.owner_id', $u->id)->whereNotIn('maintenance_requests.status', ['resolved', 'closed'])->count(),
                 'pending_inspections' => DB::table('inspections')->join('lease_contracts', 'lease_contracts.id', '=', 'inspections.lease_contract_id')->where('lease_contracts.owner_id', $u->id)->where('inspections.status', '!=', 'completed')->count(),
-                'rent_received' => (float) DB::table('payments')->join('lease_contracts', 'lease_contracts.id', '=', 'payments.lease_contract_id')->where('lease_contracts.owner_id', $u->id)->where('payments.status', 'confirmed')->sum('payments.amount'),
-                'rent_pending' => (float) DB::table('rent_schedules')->join('lease_contracts', 'lease_contracts.id', '=', 'rent_schedules.lease_contract_id')->where('lease_contracts.owner_id', $u->id)->whereIn('rent_schedules.status', ['due', 'late', 'unpaid'])->sum(DB::raw('amount-paid_amount')),
+                'rent_received' => (float) (clone $ownerPayments)->where('payments.status', 'confirmed')->sum('payments.amount'),
+                'rent_received_month' => (float) (clone $ownerPayments)->where('payments.status', 'confirmed')->whereBetween('payments.confirmed_at', [$monthStart, $monthEnd])->sum('payments.amount'),
+                'rent_due_month' => $rentDueMonth,
+                'rent_collected_for_month' => $rentCollectedForMonth,
+                'collection_rate' => $rentDueMonth > 0 ? round(min(100, ($rentCollectedForMonth / $rentDueMonth) * 100), 1) : 0,
+                'rent_pending' => (float) (clone $ownerSchedules)->whereIn('rent_schedules.status', ['due', 'partial', 'late', 'unpaid'])->sum(DB::raw('CASE WHEN rent_schedules.amount > rent_schedules.paid_amount THEN rent_schedules.amount - rent_schedules.paid_amount ELSE 0 END')),
             ];
         } elseif ($u->role === 'tenant') {
             $contract = DB::table('lease_contracts')->where('tenant_id', $u->id)->where('status', 'active')->first();

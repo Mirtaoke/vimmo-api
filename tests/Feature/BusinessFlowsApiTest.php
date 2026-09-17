@@ -20,7 +20,18 @@ class BusinessFlowsApiTest extends TestCase
 
         $this->actingAs($owner)->getJson('/api/dashboard')
             ->assertOk()
-            ->assertJsonStructure(['data' => ['properties', 'private_properties', 'units', 'occupied_units', 'tenants', 'active_listings', 'pending_payments', 'open_maintenance', 'pending_inspections', 'rent_received', 'rent_pending']]);
+            ->assertJsonStructure(['data' => ['properties', 'private_properties', 'units', 'occupied_units', 'tenants', 'active_contracts', 'active_listings', 'pending_payments', 'open_maintenance', 'pending_inspections', 'rent_received', 'rent_received_month', 'rent_due_month', 'rent_collected_for_month', 'collection_rate', 'rent_pending']]);
+    }
+
+    public function test_new_owner_dashboard_contains_only_zero_values(): void
+    {
+        $owner = User::factory()->create(['role' => 'owner']);
+
+        $response = $this->actingAs($owner)->getJson('/api/dashboard')->assertOk();
+
+        foreach (['properties', 'private_properties', 'units', 'occupied_units', 'tenants', 'active_contracts', 'active_listings', 'pending_payments', 'open_maintenance', 'pending_inspections', 'rent_received', 'rent_received_month', 'rent_due_month', 'rent_collected_for_month', 'collection_rate', 'rent_pending'] as $key) {
+            $this->assertEquals(0, $response->json('data.'.$key), "La valeur {$key} doit être nulle pour un nouveau propriétaire.");
+        }
     }
 
     public function test_organizer_can_read_sales_and_scan_ticket_only_once(): void
