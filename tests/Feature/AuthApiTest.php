@@ -15,6 +15,9 @@ class AuthApiTest extends TestCase
         $this->postJson('/api/auth/register', ['first_name' => 'Nadia', 'last_name' => 'Kiki', 'email' => 'nadia@example.com', 'phone' => '97001122', 'role' => 'seeker', 'password' => 'password', 'password_confirmation' => 'password'])
             ->assertCreated()
             ->assertJsonPath('success', true)
+            ->assertJsonPath('data.expires_in', 600)
+            ->assertJsonPath('data.resend_available_in', 60)
+            ->assertJsonPath('data.remaining_resends', 5)
             ->assertJsonStructure(['data' => ['email', 'sandbox_otp']])
             ->assertJsonMissingPath('data.token')
             ->assertJsonMissingPath('data.user');
@@ -48,6 +51,30 @@ class AuthApiTest extends TestCase
 
         $this->assertDatabaseCount('pending_registrations', 1);
         $this->assertDatabaseMissing('users', ['email' => 'pending@example.com']);
+    }
+
+    public function test_otp_resend_has_a_cooldown_and_a_maximum(): void
+    {
+        $payload = ['first_name' => 'Mina', 'last_name' => 'Kora', 'email' => 'mina@example.com', 'phone' => '97006677', 'role' => 'seeker', 'password' => 'password', 'password_confirmation' => 'password'];
+        $this->postJson('/api/auth/register', $payload)->assertCreated();
+
+        $this->postJson('/api/auth/resend-otp', ['email' => 'mina@example.com'])
+            ->assertTooManyRequests()
+            ->assertJsonPath('errors.remaining_resends', 5);
+
+        $this->travel(61)->seconds();
+        $this->postJson('/api/auth/resend-otp', ['email' => 'mina@example.com'])
+            ->assertOk()
+            ->assertJsonPath('data.expires_in', 600)
+            ->assertJsonPath('data.remaining_resends', 4);
+
+        \Illuminate\Support\Facades\DB::table('pending_registrations')
+            ->where('email', 'mina@example.com')
+            ->update(['resend_count' => 5, 'last_sent_at' => now()->subMinutes(2)]);
+        $this->travel(61)->seconds();
+        $this->postJson('/api/auth/resend-otp', ['email' => 'mina@example.com'])
+            ->assertTooManyRequests()
+            ->assertJsonPath('errors.remaining_resends', 0);
     }
 
     public function test_tenant_cannot_create_an_account_from_public_registration(): void

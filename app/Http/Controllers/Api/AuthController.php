@@ -59,6 +59,8 @@ class AuthController extends Controller
                         'role' => $data['role'],
                         'password' => Hash::make($data['password']),
                         'otp_hash' => Hash::make($otp),
+                        'resend_count' => 0,
+                        'last_sent_at' => now(),
                         'expires_at' => now()->addMinutes(10),
                         'created_at' => now(),
                         'updated_at' => now(),
@@ -98,7 +100,13 @@ class AuthController extends Controller
             );
         }
 
-        return ApiResponse::success(['email' => $data['email'], 'sandbox_otp' => app()->environment(['local', 'testing']) ? $otp : null], 'Code de vérification envoyé. Le compte sera créé après validation.', 201);
+        return ApiResponse::success([
+            'email' => $data['email'],
+            'sandbox_otp' => app()->environment(['local', 'testing']) ? $otp : null,
+            'expires_in' => 600,
+            'resend_available_in' => 60,
+            'remaining_resends' => 5,
+        ], 'Code de vérification envoyé. Le compte sera créé après validation.', 201);
     }
 
     public function login(Request $request)
@@ -241,15 +249,43 @@ class AuthController extends Controller
         if (! $pending) {
             return ApiResponse::error('Aucune inscription en attente pour cette adresse e-mail.', 404);
         }
+        $remainingResends = max(0, 5 - (int) $pending->resend_count);
+        if ($remainingResends === 0) {
+            return ApiResponse::error(
+                'Le nombre maximal de renvois a été atteint. Recommencez l’inscription.',
+                429,
+                ['remaining_resends' => 0]
+            );
+        }
+        if ($pending->last_sent_at) {
+            $availableAt = Carbon::parse($pending->last_sent_at)->addSeconds(60);
+            if (now()->lt($availableAt)) {
+                return ApiResponse::error(
+                    'Veuillez patienter avant de demander un nouveau code.',
+                    429,
+                    [
+                        'retry_after' => max(1, (int) ceil(now()->diffInSeconds($availableAt))),
+                        'remaining_resends' => $remainingResends,
+                    ]
+                );
+            }
+        }
         $otp = (string) random_int(100000, 999999);
         DB::table('pending_registrations')->where('id', $pending->id)->update([
             'otp_hash' => Hash::make($otp),
+            'resend_count' => (int) $pending->resend_count + 1,
+            'last_sent_at' => now(),
             'expires_at' => now()->addMinutes(10),
             'updated_at' => now(),
         ]);
         $this->sendRegistrationOtp($pending->email, $pending->first_name, $otp);
 
-        return ApiResponse::success(['sandbox_otp' => app()->environment(['local', 'testing']) ? $otp : null], 'Un nouveau code a été envoyé.');
+        return ApiResponse::success([
+            'sandbox_otp' => app()->environment(['local', 'testing']) ? $otp : null,
+            'expires_in' => 600,
+            'resend_available_in' => 60,
+            'remaining_resends' => $remainingResends - 1,
+        ], 'Un nouveau code a été envoyé. L’ancien code n’est plus valable.');
     }
 
     private function sendRegistrationOtp(string $email, string $firstName, string $code): void
