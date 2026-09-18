@@ -88,7 +88,7 @@ class MarketplaceController extends Controller
 
     public function properties(Request $r)
     {
-        return ApiResponse::success(Property::with(['units', 'media'])
+        return ApiResponse::success(Property::with(['units.media', 'media'])
             ->where('owner_id', $r->user()->id)
             ->latest()
             ->get());
@@ -96,7 +96,7 @@ class MarketplaceController extends Controller
 
     public function units(Request $r)
     {
-        $q = Unit::with(['property.media', 'contracts.tenant:id,name,email,phone'])->whereHas('property', fn ($x) => $x->where('owner_id', $r->user()->id));
+        $q = Unit::with(['media', 'property.media', 'contracts.tenant:id,name,email,phone'])->whereHas('property', fn ($x) => $x->where('owner_id', $r->user()->id));
         if ($r->filled('property_id')) {
             $q->where('property_id', $r->integer('property_id'));
         }if ($r->filled('status')) {
@@ -160,9 +160,36 @@ class MarketplaceController extends Controller
     public function storeUnit(Request $r, Property $property)
     {
         abort_unless($property->owner_id === $r->user()->id, 403);
-        $d = $r->validate(['reference' => 'required|string', 'type' => 'required|string', 'surface' => 'nullable|numeric', 'rooms' => 'integer|min:0', 'bedrooms' => 'integer|min:0', 'bathrooms' => 'integer|min:0', 'monthly_rent' => 'numeric|min:0', 'amenities' => 'nullable|array']);
+        $d = $r->validate(['reference' => 'required|string', 'type' => 'required|string', 'description' => 'nullable|string', 'surface' => 'nullable|numeric', 'rooms' => 'integer|min:0', 'bedrooms' => 'integer|min:0', 'bathrooms' => 'integer|min:0', 'monthly_rent' => 'numeric|min:0', 'amenities' => 'nullable|array']);
 
         return ApiResponse::success($property->units()->create($d), 'Logement créé.', 201);
+    }
+
+    public function storeUnitMedia(Request $r, Unit $unit)
+    {
+        abort_unless($unit->property()->where('owner_id', $r->user()->id)->exists(), 403);
+        $data = $r->validate([
+            'images' => 'required|array|min:1|max:20',
+            'images.*' => 'image|max:15360',
+            'labels' => 'required|string',
+        ]);
+        $labels = explode('|', $data['labels']);
+        $media = [];
+        foreach ($r->file('images', []) as $index => $file) {
+            $media[] = Media::create([
+                'user_id' => $r->user()->id,
+                'mediable_type' => Unit::class,
+                'mediable_id' => $unit->id,
+                'collection' => 'gallery',
+                'label' => $labels[$index] ?? 'Pièce',
+                'disk' => 'public',
+                'path' => $file->store('units', 'public'),
+                'mime_type' => $file->getMimeType(),
+                'size' => $file->getSize(),
+            ]);
+        }
+
+        return ApiResponse::success($media, 'Galerie du logement enregistrée.', 201);
     }
 
     public function storeListing(Request $r, ListingAlertService $alerts)

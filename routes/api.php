@@ -62,6 +62,7 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::put('/properties/{property}', [MarketplaceController::class, 'updateProperty']);
         Route::delete('/properties/{property}', [MarketplaceController::class, 'deleteProperty']);
         Route::post('/properties/{property}/units', [MarketplaceController::class, 'storeUnit']);
+        Route::post('/units/{unit}/media', [MarketplaceController::class, 'storeUnitMedia']);
         Route::post('/listings', [MarketplaceController::class, 'storeListing']);
         Route::put('/listings/{listing}', [MarketplaceController::class, 'updateListing']);
         Route::delete('/listings/{listing}', [MarketplaceController::class, 'deleteListing']);

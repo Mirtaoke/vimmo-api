@@ -27,4 +27,9 @@ class Unit extends Model
     {
         return $this->hasMany(LeaseContract::class);
     }
+
+    public function media()
+    {
+        return $this->morphMany(Media::class, 'mediable');
+    }
 }
