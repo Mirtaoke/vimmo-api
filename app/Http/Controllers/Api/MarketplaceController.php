@@ -88,7 +88,10 @@ class MarketplaceController extends Controller
 
     public function properties(Request $r)
     {
-        return ApiResponse::success(Property::with(['units', 'media'])->where('owner_id', $r->user()->id)->latest()->get());
+        return ApiResponse::success(Property::with(['units', 'media'])
+            ->where('owner_id', $r->user()->id)
+            ->latest()
+            ->get());
     }
 
     public function units(Request $r)
@@ -100,7 +103,7 @@ class MarketplaceController extends Controller
             $q->where('status', $r->status);
         }
 
-return ApiResponse::success($q->get());
+        return ApiResponse::success($q->get());
     }
 
     public function tenants(Request $r)
@@ -151,7 +154,7 @@ return ApiResponse::success($q->get());
             $media[] = Media::create(['user_id' => $r->user()->id, 'mediable_type' => Property::class, 'mediable_id' => $property->id, 'collection' => str_starts_with((string) $file->getMimeType(), 'video/') ? 'videos' : 'gallery', 'label' => $labels[$index] ?? 'Pièce', 'disk' => 'public', 'path' => $file->store('properties', 'public'), 'mime_type' => $file->getMimeType(), 'size' => $file->getSize()]);
         }
 
-return ApiResponse::success($media, 'Galerie du bien enregistrée.', 201);
+        return ApiResponse::success($media, 'Galerie du bien enregistrée.', 201);
     }
 
     public function storeUnit(Request $r, Property $property)
@@ -174,7 +177,7 @@ return ApiResponse::success($media, 'Galerie du bien enregistrée.', 201);
             $alerts->notifyFor($listing);
         }
 
-return ApiResponse::success($listing, 'Annonce enregistrée.', 201);
+        return ApiResponse::success($listing, 'Annonce enregistrée.', 201);
     }
 
     public function updateListing(Request $r, Listing $listing, ListingAlertService $alerts)
@@ -189,7 +192,7 @@ return ApiResponse::success($listing, 'Annonce enregistrée.', 201);
             $alerts->notifyFor($listing);
         }
 
-return ApiResponse::success($listing->fresh(['unit.property', 'media']), 'Annonce mise à jour.');
+        return ApiResponse::success($listing->fresh(['unit.property', 'media']), 'Annonce mise à jour.');
     }
 
     public function deleteListing(Request $r, Listing $listing)
@@ -259,17 +262,17 @@ return ApiResponse::success($listing->fresh(['unit.property', 'media']), 'Annonc
             $q->where('visit_requests.requester_id', $r->user()->id);
         }
 
-return ApiResponse::success($q->select('visit_requests.*', 'listings.title')->latest('visit_requests.created_at')->get());
+        return ApiResponse::success($q->select('visit_requests.*', 'listings.title')->latest('visit_requests.created_at')->get());
     }
 
     public function visitStatus(Request $r, int $visit)
     {
         $row = DB::table('visit_requests')->join('listings', 'listings.id', '=', 'visit_requests.listing_id')->where('visit_requests.id', $visit)->where('listings.owner_id', $r->user()->id)->select('visit_requests.*', 'listings.title')->first();
-        abort_unless($row,404);
+        abort_unless($row, 404);
         $d = $r->validate(['status' => 'required|in:accepted,confirmed,completed,cancelled']);
-        DB::table('visit_requests')->where('id',$visit)->update(['status' => $d['status'], 'updated_at' => now()]);
+        DB::table('visit_requests')->where('id', $visit)->update(['status' => $d['status'], 'updated_at' => now()]);
         DB::table('notifications')->insert(['user_id' => $row->requester_id, 'type' => 'visit', 'title' => 'Visite mise à jour', 'body' => 'Votre visite pour '.$row->title.' est maintenant : '.$d['status'].'.', 'data' => json_encode(['visit_id' => $visit]), 'created_at' => now(), 'updated_at' => now()]);
 
-        return ApiResponse::success(DB::table('visit_requests')->find($visit),'Statut de visite mis à jour.');
+        return ApiResponse::success(DB::table('visit_requests')->find($visit), 'Statut de visite mis à jour.');
     }
 }

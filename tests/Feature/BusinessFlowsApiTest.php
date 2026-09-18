@@ -20,7 +20,7 @@ class BusinessFlowsApiTest extends TestCase
 
         $this->actingAs($owner)->getJson('/api/dashboard')
             ->assertOk()
-            ->assertJsonStructure(['data' => ['properties', 'private_properties', 'units', 'occupied_units', 'tenants', 'active_contracts', 'active_listings', 'pending_payments', 'open_maintenance', 'pending_inspections', 'rent_received', 'rent_received_month', 'rent_due_month', 'rent_collected_for_month', 'collection_rate', 'rent_pending', 'unread_messages', 'unread_notifications']]);
+            ->assertJsonStructure(['data' => ['properties', 'rental_properties', 'private_properties', 'units', 'occupied_units', 'tenants', 'active_contracts', 'active_listings', 'pending_payments', 'open_maintenance', 'pending_inspections', 'rent_received', 'rent_received_month', 'rent_due_month', 'rent_collected_for_month', 'collection_rate', 'rent_pending', 'unread_messages', 'unread_notifications']]);
     }
 
     public function test_new_owner_dashboard_contains_only_zero_values(): void
@@ -29,7 +29,7 @@ class BusinessFlowsApiTest extends TestCase
 
         $response = $this->actingAs($owner)->getJson('/api/dashboard')->assertOk();
 
-        foreach (['properties', 'private_properties', 'units', 'occupied_units', 'tenants', 'active_contracts', 'active_listings', 'pending_payments', 'open_maintenance', 'pending_inspections', 'rent_received', 'rent_received_month', 'rent_due_month', 'rent_collected_for_month', 'collection_rate', 'rent_pending', 'unread_messages', 'unread_notifications'] as $key) {
+        foreach (['properties', 'rental_properties', 'private_properties', 'units', 'occupied_units', 'tenants', 'active_contracts', 'active_listings', 'pending_payments', 'open_maintenance', 'pending_inspections', 'rent_received', 'rent_received_month', 'rent_due_month', 'rent_collected_for_month', 'collection_rate', 'rent_pending', 'unread_messages', 'unread_notifications'] as $key) {
             $this->assertEquals(0, $response->json('data.'.$key), "La valeur {$key} doit être nulle pour un nouveau propriétaire.");
         }
     }

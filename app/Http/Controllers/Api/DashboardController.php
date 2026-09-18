@@ -23,7 +23,8 @@ class DashboardController extends Controller
             $rentDueMonth = (float) (clone $monthSchedules)->sum('rent_schedules.amount');
             $rentCollectedForMonth = (float) (clone $monthSchedules)->sum('rent_schedules.paid_amount');
             $data = [
-                'properties' => DB::table('properties')->where('owner_id', $u->id)->where('is_private', false)->count(),
+                'properties' => DB::table('properties')->where('owner_id', $u->id)->count(),
+                'rental_properties' => DB::table('properties')->where('owner_id', $u->id)->where('is_private', false)->count(),
                 'private_properties' => DB::table('properties')->where('owner_id', $u->id)->where('is_private', true)->count(),
                 'units' => (clone $ownedUnits)->count(),
                 'occupied_units' => (clone $ownedUnits)->where('units.status', 'occupied')->count(),
