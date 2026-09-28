@@ -133,18 +133,13 @@ class PatrimonyController extends Controller
 
         $downloadName = $media->metadata['original_name'] ?? basename($media->path);
 
-        $disk = Storage::disk($media->disk);
+        $content = Storage::disk($media->disk)->get($media->path);
+        $safeName = str_replace(['"', "\r", "\n"], '', Str::ascii($downloadName));
 
-        return response()->streamDownload(function () use ($disk, $media): void {
-            $stream = $disk->readStream($media->path);
-            abort_unless(is_resource($stream), 404, 'Fichier introuvable.');
-            try {
-                fpassthru($stream);
-            } finally {
-                fclose($stream);
-            }
-        }, $downloadName, [
+        return response($content, 200, [
             'Content-Type' => $media->mime_type ?: 'application/octet-stream',
+            'Content-Length' => (string) strlen($content),
+            'Content-Disposition' => 'attachment; filename="'.$safeName.'"',
             'Cache-Control' => 'private, no-store, max-age=0',
         ]);
     }
