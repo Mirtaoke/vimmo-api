@@ -62,7 +62,10 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::put('/properties/{property}', [MarketplaceController::class, 'updateProperty']);
         Route::delete('/properties/{property}', [MarketplaceController::class, 'deleteProperty']);
         Route::post('/properties/{property}/units', [MarketplaceController::class, 'storeUnit']);
+        Route::put('/units/{unit}', [MarketplaceController::class, 'updateUnit']);
+        Route::delete('/units/{unit}', [MarketplaceController::class, 'deleteUnit']);
         Route::post('/units/{unit}/media', [MarketplaceController::class, 'storeUnitMedia']);
+        Route::delete('/units/{unit}/media/{media}', [MarketplaceController::class, 'deleteUnitMedia']);
         Route::post('/listings', [MarketplaceController::class, 'storeListing']);
         Route::put('/listings/{listing}', [MarketplaceController::class, 'updateListing']);
         Route::delete('/listings/{listing}', [MarketplaceController::class, 'deleteListing']);
@@ -123,9 +126,9 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('/organizer/tickets/scan', [EventController::class, 'scan'])->middleware('role:organizer');
     Route::post('/events/{event}/orders', [EventController::class, 'order']);
     Route::get('/tickets', [EventController::class, 'tickets']);
-    Route::post('/ticket-orders/{order}/cancel',[EventController::class, 'cancelOrder']);
-    Route::get('/notifications',[NotificationController::class, 'index']);
-    Route::put('/notifications/read-all',[NotificationController::class, 'readAll']);
-    Route::put('/notifications/{id}/read',[NotificationController::class, 'read']);
+    Route::post('/ticket-orders/{order}/cancel', [EventController::class, 'cancelOrder']);
+    Route::get('/notifications', [NotificationController::class, 'index']);
+    Route::put('/notifications/read-all', [NotificationController::class, 'readAll']);
+    Route::put('/notifications/{id}/read', [NotificationController::class, 'read']);
 });
-Route::post('/properties/{property}/media',[MarketplaceController::class, 'storePropertyMedia'])->middleware(['auth:sanctum', 'role:owner']);
+Route::post('/properties/{property}/media', [MarketplaceController::class, 'storePropertyMedia'])->middleware(['auth:sanctum', 'role:owner']);

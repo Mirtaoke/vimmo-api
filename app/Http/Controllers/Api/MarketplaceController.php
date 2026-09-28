@@ -165,6 +165,55 @@ class MarketplaceController extends Controller
         return ApiResponse::success($property->units()->create($d), 'Logement créé.', 201);
     }
 
+    public function updateUnit(Request $r, Unit $unit)
+    {
+        abort_unless($unit->property()->where('owner_id', $r->user()->id)->exists(), 403);
+        $data = $r->validate([
+            'reference' => 'sometimes|required|string|max:120',
+            'type' => 'sometimes|required|string|max:120',
+            'description' => 'nullable|string|max:5000',
+            'surface' => 'nullable|numeric|min:0',
+            'rooms' => 'sometimes|integer|min:0',
+            'bedrooms' => 'sometimes|integer|min:0',
+            'bathrooms' => 'sometimes|integer|min:0',
+            'monthly_rent' => 'sometimes|numeric|min:0',
+            'amenities' => 'nullable|array',
+            'status' => 'sometimes|required|in:available,reserved,maintenance,inspection,inactive',
+        ]);
+        if (isset($data['reference'])) {
+            abort_if(
+                Unit::where('property_id', $unit->property_id)
+                    ->where('reference', $data['reference'])
+                    ->whereKeyNot($unit->id)
+                    ->exists(),
+                422,
+                'Cette référence est déjà utilisée dans ce bien.',
+            );
+        }
+        abort_if(
+            isset($data['status']) &&
+                $unit->contracts()->where('status', 'active')->exists(),
+            422,
+            'Le statut d’un logement occupé dépend de son contrat actif.',
+        );
+        $unit->update($data);
+
+        return ApiResponse::success($unit->fresh('media'), 'Logement mis à jour.');
+    }
+
+    public function deleteUnit(Request $r, Unit $unit)
+    {
+        abort_unless($unit->property()->where('owner_id', $r->user()->id)->exists(), 403);
+        abort_if(
+            $unit->contracts()->where('status', 'active')->exists(),
+            422,
+            'Impossible de supprimer un logement lié à un contrat actif.',
+        );
+        $unit->delete();
+
+        return ApiResponse::success(null, 'Logement supprimé.');
+    }
+
     public function storeUnitMedia(Request $r, Unit $unit)
     {
         abort_unless($unit->property()->where('owner_id', $r->user()->id)->exists(), 403);
@@ -190,6 +239,18 @@ class MarketplaceController extends Controller
         }
 
         return ApiResponse::success($media, 'Galerie du logement enregistrée.', 201);
+    }
+
+    public function deleteUnitMedia(Request $r, Unit $unit, Media $media)
+    {
+        abort_unless($unit->property()->where('owner_id', $r->user()->id)->exists(), 403);
+        abort_unless(
+            $media->mediable_type === Unit::class && $media->mediable_id === $unit->id,
+            404,
+        );
+        $media->delete();
+
+        return ApiResponse::success(null, 'Photo supprimée du logement.');
     }
 
     public function storeListing(Request $r, ListingAlertService $alerts)

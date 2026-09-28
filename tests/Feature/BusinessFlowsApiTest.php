@@ -2,9 +2,11 @@
 
 namespace Tests\Feature;
 
+use App\Models\LeaseContract;
 use App\Models\Payment;
 use App\Models\Receipt;
 use App\Models\Ticket;
+use App\Models\Unit;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
@@ -88,6 +90,62 @@ class BusinessFlowsApiTest extends TestCase
         $this->actingAs($owner)->deleteJson('/api/properties/'.$created['id'])
             ->assertOk()->assertJsonPath('success', true);
         $this->assertDatabaseMissing('properties', ['id' => $created['id']]);
+    }
+
+    public function test_owner_can_update_and_delete_an_unleased_unit(): void
+    {
+        $this->seed();
+        $owner = User::where('role', 'owner')->firstOrFail();
+        $property = $owner->properties()->firstOrFail();
+        $unit = Unit::create([
+            'property_id' => $property->id,
+            'reference' => 'TEST-UNIT',
+            'type' => 'Studio',
+            'surface' => 30,
+            'rooms' => 1,
+            'bedrooms' => 1,
+            'bathrooms' => 1,
+            'monthly_rent' => 100000,
+        ]);
+
+        $this->actingAs($owner)->putJson('/api/units/'.$unit->id, [
+            'reference' => 'STUDIO-CORRIGE',
+            'description' => 'Studio rénové et lumineux.',
+            'monthly_rent' => 125000,
+        ])->assertOk()
+            ->assertJsonPath('data.reference', 'STUDIO-CORRIGE')
+            ->assertJsonPath('data.description', 'Studio rénové et lumineux.');
+
+        $this->actingAs($owner)->deleteJson('/api/units/'.$unit->id)
+            ->assertOk();
+        $this->assertDatabaseMissing('units', ['id' => $unit->id]);
+    }
+
+    public function test_owner_cannot_change_or_delete_another_owners_unit(): void
+    {
+        $this->seed();
+        $owner = User::where('role', 'owner')->firstOrFail();
+        $outsider = User::factory()->create(['role' => 'owner']);
+        $unit = Unit::whereHas('property', fn ($query) => $query->where('owner_id', $owner->id))->firstOrFail();
+
+        $this->actingAs($outsider)->putJson('/api/units/'.$unit->id, [
+            'reference' => 'INTERDIT',
+        ])->assertForbidden();
+        $this->actingAs($outsider)->deleteJson('/api/units/'.$unit->id)
+            ->assertForbidden();
+    }
+
+    public function test_owner_cannot_delete_a_unit_with_an_active_contract(): void
+    {
+        $this->seed();
+        $contract = LeaseContract::where('status', 'active')->firstOrFail();
+        $owner = User::findOrFail($contract->owner_id);
+
+        $this->actingAs($owner)->deleteJson('/api/units/'.$contract->unit_id)
+            ->assertStatus(422)
+            ->assertJsonFragment([
+                'message' => 'Impossible de supprimer un logement lié à un contrat actif.',
+            ]);
     }
 
     public function test_owner_can_reject_a_pending_payment_with_a_reason(): void
