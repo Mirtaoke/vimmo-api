@@ -131,7 +131,7 @@ class MarketplaceController extends Controller
         $d = $r->validate(['name' => 'sometimes|required|string', 'type' => 'sometimes|required|string', 'description' => 'nullable|string', 'address' => 'nullable|string', 'district' => 'nullable|string', 'commune' => 'nullable|string', 'city' => 'nullable|string', 'surface' => 'nullable|numeric|min:0', 'latitude' => 'nullable|numeric|between:-90,90', 'longitude' => 'nullable|numeric|between:-180,180', 'is_private' => 'boolean']);
         $property->update($d);
 
-        return ApiResponse::success($property->fresh(['units', 'media']), 'Bien mis à jour.');
+        return ApiResponse::success($property->fresh(['units.media', 'media']), 'Bien mis à jour.');
     }
 
     public function deleteProperty(Request $r, Property $property)

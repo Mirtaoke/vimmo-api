@@ -83,6 +83,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/units', [MarketplaceController::class, 'units'])->middleware('role:owner');
     Route::get('/tenants', [MarketplaceController::class, 'tenants'])->middleware('role:owner');
     Route::get('/patrimony/shared-with-me', [PatrimonyController::class, 'sharedWithMe']);
+    Route::put('/patrimony/{property}', [PatrimonyController::class, 'update']);
     Route::post('/patrimony/{property}/photos', [PatrimonyController::class, 'photos']);
     Route::post('/patrimony/{property}/documents', [PatrimonyController::class, 'document']);
     Route::get('/units/{unit}/timeline', [RentalController::class, 'unitTimeline']);

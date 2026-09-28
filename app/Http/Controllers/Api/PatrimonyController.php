@@ -21,7 +21,26 @@ class PatrimonyController extends Controller
 {
     public function index(Request $request)
     {
-        return ApiResponse::success(Property::with('media')->where('owner_id', $request->user()->id)->where('is_private', true)->latest()->get());
+        $properties = Property::with('media')
+            ->where('owner_id', $request->user()->id)
+            ->where('is_private', true)
+            ->latest()
+            ->get();
+        $shares = DB::table('asset_shares')
+            ->join('users', 'users.id', '=', 'asset_shares.shared_with_id')
+            ->whereIn('property_id', $properties->pluck('id'))
+            ->whereNull('revoked_at')
+            ->select('asset_shares.*', 'users.name as account_name')
+            ->get()
+            ->groupBy('property_id');
+        $properties->each(
+            fn (Property $property) => $property->setAttribute(
+                'active_shares',
+                $shares->get($property->id, collect())->values(),
+            ),
+        );
+
+        return ApiResponse::success($properties);
     }
 
     public function sharedWithMe(Request $request)
@@ -45,6 +64,26 @@ class PatrimonyController extends Controller
         $data = $request->validate(['name' => 'required|string', 'type' => 'required|string', 'description' => 'nullable|string', 'surface' => 'nullable|numeric', 'address' => 'nullable|string', 'district' => 'nullable|string', 'commune' => 'nullable|string', 'cadastral_reference' => 'nullable|string', 'latitude' => 'nullable|numeric|between:-90,90', 'longitude' => 'nullable|numeric|between:-180,180']);
 
         return ApiResponse::success(Property::create([...$data, 'owner_id' => $request->user()->id, 'is_private' => true]), 'Bien ajouté au coffre.', 201);
+    }
+
+    public function update(Request $request, Property $property)
+    {
+        $this->authorizeManagement($request, $property);
+        $data = $request->validate([
+            'name' => 'sometimes|required|string|max:180',
+            'type' => 'sometimes|required|string|max:120',
+            'description' => 'nullable|string|max:5000',
+            'surface' => 'nullable|numeric|min:0',
+            'address' => 'nullable|string|max:500',
+            'district' => 'nullable|string|max:180',
+            'commune' => 'nullable|string|max:180',
+            'cadastral_reference' => 'nullable|string|max:180',
+            'latitude' => 'nullable|numeric|between:-90,90',
+            'longitude' => 'nullable|numeric|between:-180,180',
+        ]);
+        $property->update($data);
+
+        return ApiResponse::success($property->fresh('media'), 'Bien familial mis à jour.');
     }
 
     public function photos(Request $request, Property $property)
@@ -94,7 +133,20 @@ class PatrimonyController extends Controller
 
         $downloadName = $media->metadata['original_name'] ?? basename($media->path);
 
-        return Storage::disk($media->disk)->download($media->path, $downloadName);
+        $disk = Storage::disk($media->disk);
+
+        return response()->streamDownload(function () use ($disk, $media): void {
+            $stream = $disk->readStream($media->path);
+            abort_unless(is_resource($stream), 404, 'Fichier introuvable.');
+            try {
+                fpassthru($stream);
+            } finally {
+                fclose($stream);
+            }
+        }, $downloadName, [
+            'Content-Type' => $media->mime_type ?: 'application/octet-stream',
+            'Cache-Control' => 'private, no-store, max-age=0',
+        ]);
     }
 
     public function shares(Request $request)
@@ -158,5 +210,18 @@ class PatrimonyController extends Controller
             return;
         }$share = $this->activeShare($request, $property);
         abort_unless($share && in_array($share->permission, ['contribute', 'manage'], true), 403, 'Vous ne pouvez pas ajouter de contenu à ce bien.');
+    }
+
+    private function authorizeManagement(Request $request, Property $property): void
+    {
+        if ($property->owner_id === $request->user()->id) {
+            return;
+        }
+        $share = $this->activeShare($request, $property);
+        abort_unless(
+            $share && $share->permission === 'manage',
+            403,
+            'Vous ne pouvez pas modifier ce bien.',
+        );
     }
 }
