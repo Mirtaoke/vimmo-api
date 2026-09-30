@@ -122,7 +122,7 @@ class MarketplaceController extends Controller
     {
         $d = $r->validate(
             ['name' => 'required|string', 'type' => 'required|string', 'description' => 'nullable|string', 'address' => 'nullable|string', 'district' => 'nullable|string', 'commune' => 'nullable|string', 'city' => 'nullable|string', 'surface' => 'nullable|numeric|min:0', 'latitude' => 'nullable|numeric|between:-90,90', 'longitude' => 'nullable|numeric|between:-180,180', 'is_private' => 'boolean'],
-            [],
+            $this->propertyMessages(),
             $this->propertyAttributes(),
         );
 
@@ -134,7 +134,7 @@ class MarketplaceController extends Controller
         abort_unless($property->owner_id === $r->user()->id, 403);
         $d = $r->validate(
             ['name' => 'sometimes|required|string', 'type' => 'sometimes|required|string', 'description' => 'nullable|string', 'address' => 'nullable|string', 'district' => 'nullable|string', 'commune' => 'nullable|string', 'city' => 'nullable|string', 'surface' => 'nullable|numeric|min:0', 'latitude' => 'nullable|numeric|between:-90,90', 'longitude' => 'nullable|numeric|between:-180,180', 'is_private' => 'boolean'],
-            [],
+            $this->propertyMessages(),
             $this->propertyAttributes(),
         );
         $property->update($d);
@@ -170,7 +170,7 @@ class MarketplaceController extends Controller
         abort_unless($property->owner_id === $r->user()->id, 403);
         $d = $r->validate(
             ['reference' => 'required|string', 'type' => 'required|string', 'description' => 'nullable|string', 'surface' => 'nullable|numeric', 'rooms' => 'integer|min:0', 'bedrooms' => 'integer|min:0', 'bathrooms' => 'integer|min:0', 'monthly_rent' => 'numeric|min:0', 'amenities' => 'nullable|array'],
-            [],
+            $this->unitMessages(),
             $this->unitAttributes(),
         );
 
@@ -191,7 +191,7 @@ class MarketplaceController extends Controller
             'monthly_rent' => 'sometimes|numeric|min:0',
             'amenities' => 'nullable|array',
             'status' => 'sometimes|required|in:available,reserved,maintenance,inspection,inactive',
-        ], [], $this->unitAttributes());
+        ], $this->unitMessages(), $this->unitAttributes());
         if (isset($data['reference'])) {
             abort_if(
                 Unit::where('property_id', $unit->property_id)
@@ -393,6 +393,17 @@ class MarketplaceController extends Controller
         ];
     }
 
+    private function propertyMessages(): array
+    {
+        return [
+            'name.required' => 'Le nom du bien est requis.',
+            'type.required' => 'Le type de bien est requis.',
+            'surface.numeric' => 'La surface doit être un nombre valide.',
+            'latitude.numeric' => 'La position GPS est invalide.',
+            'longitude.numeric' => 'La position GPS est invalide.',
+        ];
+    }
+
     private function unitAttributes(): array
     {
         return [
@@ -406,6 +417,19 @@ class MarketplaceController extends Controller
             'monthly_rent' => 'loyer mensuel',
             'amenities' => 'équipements',
             'status' => 'statut du logement',
+        ];
+    }
+
+    private function unitMessages(): array
+    {
+        return [
+            'reference.required' => 'La référence du logement est requise.',
+            'type.required' => 'Le type de logement est requis.',
+            'surface.numeric' => 'La surface du logement doit être un nombre valide.',
+            'rooms.integer' => 'Le nombre de pièces doit être un entier.',
+            'bedrooms.integer' => 'Le nombre de chambres doit être un entier.',
+            'bathrooms.integer' => 'Le nombre de salles de bain doit être un entier.',
+            'monthly_rent.numeric' => 'Le loyer mensuel doit être un nombre valide.',
         ];
     }
 }
