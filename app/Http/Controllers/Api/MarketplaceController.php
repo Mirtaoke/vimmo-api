@@ -120,7 +120,11 @@ class MarketplaceController extends Controller
 
     public function storeProperty(Request $r)
     {
-        $d = $r->validate(['name' => 'required|string', 'type' => 'required|string', 'description' => 'nullable|string', 'address' => 'nullable|string', 'district' => 'nullable|string', 'commune' => 'nullable|string', 'city' => 'nullable|string', 'surface' => 'nullable|numeric|min:0', 'latitude' => 'nullable|numeric|between:-90,90', 'longitude' => 'nullable|numeric|between:-180,180', 'is_private' => 'boolean']);
+        $d = $r->validate(
+            ['name' => 'required|string', 'type' => 'required|string', 'description' => 'nullable|string', 'address' => 'nullable|string', 'district' => 'nullable|string', 'commune' => 'nullable|string', 'city' => 'nullable|string', 'surface' => 'nullable|numeric|min:0', 'latitude' => 'nullable|numeric|between:-90,90', 'longitude' => 'nullable|numeric|between:-180,180', 'is_private' => 'boolean'],
+            [],
+            $this->propertyAttributes(),
+        );
 
         return ApiResponse::success(Property::create([...$d, 'owner_id' => $r->user()->id]), 'Bien créé.', 201);
     }
@@ -128,7 +132,11 @@ class MarketplaceController extends Controller
     public function updateProperty(Request $r, Property $property)
     {
         abort_unless($property->owner_id === $r->user()->id, 403);
-        $d = $r->validate(['name' => 'sometimes|required|string', 'type' => 'sometimes|required|string', 'description' => 'nullable|string', 'address' => 'nullable|string', 'district' => 'nullable|string', 'commune' => 'nullable|string', 'city' => 'nullable|string', 'surface' => 'nullable|numeric|min:0', 'latitude' => 'nullable|numeric|between:-90,90', 'longitude' => 'nullable|numeric|between:-180,180', 'is_private' => 'boolean']);
+        $d = $r->validate(
+            ['name' => 'sometimes|required|string', 'type' => 'sometimes|required|string', 'description' => 'nullable|string', 'address' => 'nullable|string', 'district' => 'nullable|string', 'commune' => 'nullable|string', 'city' => 'nullable|string', 'surface' => 'nullable|numeric|min:0', 'latitude' => 'nullable|numeric|between:-90,90', 'longitude' => 'nullable|numeric|between:-180,180', 'is_private' => 'boolean'],
+            [],
+            $this->propertyAttributes(),
+        );
         $property->update($d);
 
         return ApiResponse::success($property->fresh(['units.media', 'media']), 'Bien mis à jour.');
@@ -160,7 +168,11 @@ class MarketplaceController extends Controller
     public function storeUnit(Request $r, Property $property)
     {
         abort_unless($property->owner_id === $r->user()->id, 403);
-        $d = $r->validate(['reference' => 'required|string', 'type' => 'required|string', 'description' => 'nullable|string', 'surface' => 'nullable|numeric', 'rooms' => 'integer|min:0', 'bedrooms' => 'integer|min:0', 'bathrooms' => 'integer|min:0', 'monthly_rent' => 'numeric|min:0', 'amenities' => 'nullable|array']);
+        $d = $r->validate(
+            ['reference' => 'required|string', 'type' => 'required|string', 'description' => 'nullable|string', 'surface' => 'nullable|numeric', 'rooms' => 'integer|min:0', 'bedrooms' => 'integer|min:0', 'bathrooms' => 'integer|min:0', 'monthly_rent' => 'numeric|min:0', 'amenities' => 'nullable|array'],
+            [],
+            $this->unitAttributes(),
+        );
 
         return ApiResponse::success($property->units()->create($d), 'Logement créé.', 201);
     }
@@ -179,7 +191,7 @@ class MarketplaceController extends Controller
             'monthly_rent' => 'sometimes|numeric|min:0',
             'amenities' => 'nullable|array',
             'status' => 'sometimes|required|in:available,reserved,maintenance,inspection,inactive',
-        ]);
+        ], [], $this->unitAttributes());
         if (isset($data['reference'])) {
             abort_if(
                 Unit::where('property_id', $unit->property_id)
@@ -362,5 +374,38 @@ class MarketplaceController extends Controller
         DB::table('notifications')->insert(['user_id' => $row->requester_id, 'type' => 'visit', 'title' => 'Visite mise à jour', 'body' => 'Votre visite pour '.$row->title.' est maintenant : '.$d['status'].'.', 'data' => json_encode(['visit_id' => $visit]), 'created_at' => now(), 'updated_at' => now()]);
 
         return ApiResponse::success(DB::table('visit_requests')->find($visit), 'Statut de visite mis à jour.');
+    }
+
+    private function propertyAttributes(): array
+    {
+        return [
+            'name' => 'nom du bien',
+            'type' => 'type de bien',
+            'description' => 'description',
+            'address' => 'adresse',
+            'district' => 'quartier',
+            'commune' => 'commune',
+            'city' => 'ville',
+            'surface' => 'surface',
+            'latitude' => 'latitude',
+            'longitude' => 'longitude',
+            'is_private' => 'caractère privé du bien',
+        ];
+    }
+
+    private function unitAttributes(): array
+    {
+        return [
+            'reference' => 'référence du logement',
+            'type' => 'type de logement',
+            'description' => 'description du logement',
+            'surface' => 'surface du logement',
+            'rooms' => 'nombre de pièces',
+            'bedrooms' => 'nombre de chambres',
+            'bathrooms' => 'nombre de salles de bain',
+            'monthly_rent' => 'loyer mensuel',
+            'amenities' => 'équipements',
+            'status' => 'statut du logement',
+        ];
     }
 }
