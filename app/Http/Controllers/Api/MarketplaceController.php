@@ -159,7 +159,13 @@ class MarketplaceController extends Controller
         $files = $r->file('files', $r->file('images', []));
         $media = [];
         foreach ($files as $index => $file) {
-            $media[] = Media::create(['user_id' => $r->user()->id, 'mediable_type' => Property::class, 'mediable_id' => $property->id, 'collection' => str_starts_with((string) $file->getMimeType(), 'video/') ? 'videos' : 'gallery', 'label' => $labels[$index] ?? 'Pièce', 'disk' => 'public', 'path' => $file->store('properties', 'public'), 'mime_type' => $file->getMimeType(), 'size' => $file->getSize()]);
+            $storedPath = $file->store('properties', 'public');
+            abort_if(
+                ! is_string($storedPath) || $storedPath === '',
+                500,
+                'La photo n’a pas pu être enregistrée sur le serveur. Vérifiez les droits du dossier storage/app/public.',
+            );
+            $media[] = Media::create(['user_id' => $r->user()->id, 'mediable_type' => Property::class, 'mediable_id' => $property->id, 'collection' => str_starts_with((string) $file->getMimeType(), 'video/') ? 'videos' : 'gallery', 'label' => $labels[$index] ?? 'Pièce', 'disk' => 'public', 'path' => $storedPath, 'mime_type' => $file->getMimeType(), 'size' => $file->getSize()]);
         }
 
         return ApiResponse::success($media, 'Galerie du bien enregistrée.', 201);
@@ -237,6 +243,12 @@ class MarketplaceController extends Controller
         $labels = explode('|', $data['labels']);
         $media = [];
         foreach ($r->file('images', []) as $index => $file) {
+            $storedPath = $file->store('units', 'public');
+            abort_if(
+                ! is_string($storedPath) || $storedPath === '',
+                500,
+                'La photo n’a pas pu être enregistrée sur le serveur. Vérifiez les droits du dossier storage/app/public.',
+            );
             $media[] = Media::create([
                 'user_id' => $r->user()->id,
                 'mediable_type' => Unit::class,
@@ -244,7 +256,7 @@ class MarketplaceController extends Controller
                 'collection' => 'gallery',
                 'label' => $labels[$index] ?? 'Pièce',
                 'disk' => 'public',
-                'path' => $file->store('units', 'public'),
+                'path' => $storedPath,
                 'mime_type' => $file->getMimeType(),
                 'size' => $file->getSize(),
             ]);
