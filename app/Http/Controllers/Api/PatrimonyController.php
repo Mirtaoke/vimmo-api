@@ -13,6 +13,7 @@ use App\Models\User;
 use App\Support\ApiResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
@@ -111,6 +112,145 @@ class PatrimonyController extends Controller
 
     public function download(Request $request, Media $media)
     {
+        $this->authorizeMediaAccess($request, $media);
+        abort_unless(Storage::disk($media->disk)->exists($media->path), 404, 'Fichier introuvable.');
+
+        $downloadName = $media->metadata['original_name'] ?? basename($media->path);
+
+        $content = Storage::disk($media->disk)->get($media->path);
+        $safeName = str_replace(['"', "\r", "\n"], '', Str::ascii($downloadName));
+
+        return response($content, 200, [
+            'Content-Type' => $media->mime_type ?: 'application/octet-stream',
+            'Content-Length' => (string) strlen($content),
+            'Content-Disposition' => 'attachment; filename="'.$safeName.'"',
+            'Cache-Control' => 'private, no-store, max-age=0',
+        ]);
+    }
+
+    public function downloadChunk(Request $request, Media $media)
+    {
+        $this->authorizeMediaAccess($request, $media);
+        $disk = Storage::disk($media->disk);
+        abort_unless($disk->exists($media->path), 404, 'Fichier introuvable.');
+
+        $offset = max(0, $request->integer('offset'));
+        $chunkSize = 256 * 1024;
+        $stream = $disk->readStream($media->path);
+        abort_unless(is_resource($stream), 404, 'Fichier introuvable.');
+        try {
+            if ($offset > 0) {
+                fseek($stream, $offset);
+            }
+            $bytes = fread($stream, $chunkSize) ?: '';
+        } finally {
+            fclose($stream);
+        }
+        $total = $disk->size($media->path);
+        $nextOffset = $offset + strlen($bytes);
+
+        return ApiResponse::success([
+            'content' => base64_encode($bytes),
+            'offset' => $offset,
+            'next_offset' => $nextOffset,
+            'total' => $total,
+            'done' => $nextOffset >= $total,
+            'name' => $media->metadata['original_name'] ?? basename($media->path),
+            'mime_type' => $media->mime_type ?: 'application/octet-stream',
+        ]);
+    }
+
+    public function shares(Request $request)
+    {
+        return ApiResponse::success(DB::table('asset_shares')->join('properties', 'properties.id', '=', 'asset_shares.property_id')->join('users', 'users.id', '=', 'asset_shares.shared_with_id')->where('properties.owner_id', $request->user()->id)->select('asset_shares.*', 'properties.name as property_name', 'users.name as account_name')->latest('asset_shares.created_at')->get());
+    }
+
+    public function share(Request $request, Property $property)
+    {
+        abort_unless($property->owner_id === $request->user()->id && $property->is_private, 403);
+        $data = $request->validate(['name' => 'required|string|max:180', 'email' => 'required|email', 'permission' => 'required|in:view,documents,contribute,manage']);
+        $email = Str::lower(trim($data['email']));
+        $recipient = User::whereRaw('LOWER(email)=?', [$email])->first();
+        abort_if($recipient && $recipient->role !== 'family_member', 422, 'Cette adresse appartient déjà à un autre espace VIMMO. Utilisez une autre adresse pour l’espace familial.');
+        abort_if($recipient && $recipient->id === $request->user()->id, 422, 'Vous êtes déjà propriétaire de ce bien.');
+        $permissionLabels = [
+            'view' => 'consultation du bien',
+            'documents' => 'consultation du bien et de ses documents',
+            'contribute' => 'consultation et ajout de contenus',
+            'manage' => 'gestion complète du bien partagé',
+        ];
+        $activationCode = null;
+        $id = DB::transaction(function () use ($data, $property, &$recipient, $request, $permissionLabels, $email, &$activationCode): int {
+            if (! $recipient) {
+                $parts = preg_split('/\s+/', trim($data['name']), 2) ?: [];
+                $recipient = User::create([
+                    'name' => trim($data['name']),
+                    'first_name' => $parts[0] ?? 'Membre',
+                    'last_name' => $parts[1] ?? 'familial',
+                    'email' => $email,
+                    'role' => 'family_member',
+                    'password' => Hash::make(Str::random(64)),
+                    'is_active' => true,
+                ]);
+                $activationCode = (string) random_int(100000, 999999);
+                DB::table('otp_codes')->insert([
+                    'user_id' => $recipient->id,
+                    'destination' => $recipient->email,
+                    'purpose' => 'family_activation',
+                    'code_hash' => Hash::make($activationCode),
+                    'resend_count' => 0,
+                    'last_sent_at' => now(),
+                    'expires_at' => now()->addMinutes(10),
+                    'created_at' => now(),
+                    'updated_at' => now(),
+                ]);
+            } elseif (! $recipient->is_active) {
+                $recipient->forceFill(['is_active' => true])->save();
+            }
+            $existing = DB::table('asset_shares')->where(['property_id' => $property->id, 'shared_with_id' => $recipient->id])->first();
+            $values = ['shared_by' => $request->user()->id, 'shared_with_id' => $recipient->id, 'name' => $data['name'], 'email' => $recipient->email, 'permission' => $data['permission'], 'revoked_at' => null, 'updated_at' => now()];
+            if ($existing) {
+                DB::table('asset_shares')->where('id', $existing->id)->update($values);
+                $shareId = $existing->id;
+            } else {
+                $shareId = DB::table('asset_shares')->insertGetId([...$values, 'property_id' => $property->id, 'token' => (string) Str::uuid(), 'created_at' => now()]);
+            }
+            DB::table('notifications')->insert(['user_id' => $recipient->id, 'type' => 'patrimony_share', 'title' => 'Un bien est partagé avec vous', 'body' => $property->name.' est maintenant accessible dans votre espace familial.', 'data' => json_encode(['property_id' => $property->id, 'share_id' => $shareId]), 'created_at' => now(), 'updated_at' => now()]);
+            Mail::to($recipient->email)->send(new PatrimonySharedMail(
+                recipientName: $recipient->name,
+                ownerName: $request->user()->name,
+                propertyName: $property->name,
+                permissionLabel: $permissionLabels[$data['permission']],
+                activationCode: $activationCode,
+                recipientEmail: $recipient->email,
+            ));
+
+            return $shareId;
+        });
+
+        return ApiResponse::success(DB::table('asset_shares')->find($id), 'Le bien est partagé avec '.$recipient->name.' et un e-mail lui a été envoyé.', 201);
+    }
+
+    public function revoke(Request $request, int $share)
+    {
+        $row = DB::table('asset_shares')->join('properties', 'properties.id', '=', 'asset_shares.property_id')->where('asset_shares.id', $share)->where('properties.owner_id', $request->user()->id)->first();
+        abort_unless($row, 404);
+        DB::table('asset_shares')->where('id', $share)->update(['revoked_at' => now(), 'updated_at' => now()]);
+        $remainingShares = DB::table('asset_shares')->where('shared_with_id', $row->shared_with_id)->whereNull('revoked_at')->exists();
+        if (! $remainingShares) {
+            User::where('id', $row->shared_with_id)->where('role', 'family_member')->update(['is_active' => false, 'updated_at' => now()]);
+        }
+
+        return ApiResponse::success(null, 'Accès révoqué.');
+    }
+
+    private function activeShare(Request $request, Property $property): ?object
+    {
+        return DB::table('asset_shares')->where(['property_id' => $property->id, 'shared_with_id' => $request->user()->id])->whereNull('revoked_at')->first();
+    }
+
+    private function authorizeMediaAccess(Request $request, Media $media): void
+    {
         $allowed = false;
         if ($media->mediable instanceof Property) {
             $property = $media->mediable;
@@ -129,74 +269,6 @@ class PatrimonyController extends Controller
             $allowed = in_array($request->user()->id, [$contract->owner_id, $contract->tenant_id], true);
         }
         abort_unless($allowed, 403, 'Vous n’avez pas accès à ce fichier.');
-        abort_unless(Storage::disk($media->disk)->exists($media->path), 404, 'Fichier introuvable.');
-
-        $downloadName = $media->metadata['original_name'] ?? basename($media->path);
-
-        $content = Storage::disk($media->disk)->get($media->path);
-        $safeName = str_replace(['"', "\r", "\n"], '', Str::ascii($downloadName));
-
-        return response($content, 200, [
-            'Content-Type' => $media->mime_type ?: 'application/octet-stream',
-            'Content-Length' => (string) strlen($content),
-            'Content-Disposition' => 'attachment; filename="'.$safeName.'"',
-            'Cache-Control' => 'private, no-store, max-age=0',
-        ]);
-    }
-
-    public function shares(Request $request)
-    {
-        return ApiResponse::success(DB::table('asset_shares')->join('properties', 'properties.id', '=', 'asset_shares.property_id')->join('users', 'users.id', '=', 'asset_shares.shared_with_id')->where('properties.owner_id', $request->user()->id)->select('asset_shares.*', 'properties.name as property_name', 'users.name as account_name')->latest('asset_shares.created_at')->get());
-    }
-
-    public function share(Request $request, Property $property)
-    {
-        abort_unless($property->owner_id === $request->user()->id && $property->is_private, 403);
-        $data = $request->validate(['name' => 'required|string|max:180', 'email' => 'required|email', 'permission' => 'required|in:view,documents,contribute,manage']);
-        $recipient = User::whereRaw('LOWER(email)=?', [Str::lower($data['email'])])->first();
-        abort_unless($recipient, 422, 'Aucun compte VIMMO n’existe avec cette adresse e-mail. Demandez au proche de créer son compte ou renseignez une autre adresse.');
-        abort_if($recipient->id === $request->user()->id, 422, 'Vous êtes déjà propriétaire de ce bien.');
-        $permissionLabels = [
-            'view' => 'consultation du bien',
-            'documents' => 'consultation du bien et de ses documents',
-            'contribute' => 'consultation et ajout de contenus',
-            'manage' => 'gestion complète du bien partagé',
-        ];
-        $id = DB::transaction(function () use ($data, $property, $recipient, $request, $permissionLabels): int {
-            $existing = DB::table('asset_shares')->where(['property_id' => $property->id, 'shared_with_id' => $recipient->id])->first();
-            $values = ['shared_by' => $request->user()->id, 'shared_with_id' => $recipient->id, 'name' => $data['name'], 'email' => $recipient->email, 'permission' => $data['permission'], 'revoked_at' => null, 'updated_at' => now()];
-            if ($existing) {
-                DB::table('asset_shares')->where('id', $existing->id)->update($values);
-                $shareId = $existing->id;
-            } else {
-                $shareId = DB::table('asset_shares')->insertGetId([...$values, 'property_id' => $property->id, 'token' => (string) Str::uuid(), 'created_at' => now()]);
-            }
-            DB::table('notifications')->insert(['user_id' => $recipient->id, 'type' => 'patrimony_share', 'title' => 'Un bien est partagé avec vous', 'body' => $property->name.' est maintenant accessible dans votre espace familial.', 'data' => json_encode(['property_id' => $property->id, 'share_id' => $shareId]), 'created_at' => now(), 'updated_at' => now()]);
-            Mail::to($recipient->email)->send(new PatrimonySharedMail(
-                recipientName: $recipient->name,
-                ownerName: $request->user()->name,
-                propertyName: $property->name,
-                permissionLabel: $permissionLabels[$data['permission']],
-            ));
-
-            return $shareId;
-        });
-
-        return ApiResponse::success(DB::table('asset_shares')->find($id), 'Le bien est partagé avec '.$recipient->name.' et un e-mail lui a été envoyé.', 201);
-    }
-
-    public function revoke(Request $request, int $share)
-    {
-        $row = DB::table('asset_shares')->join('properties', 'properties.id', '=', 'asset_shares.property_id')->where('asset_shares.id', $share)->where('properties.owner_id', $request->user()->id)->first();
-        abort_unless($row, 404);
-        DB::table('asset_shares')->where('id', $share)->update(['revoked_at' => now(), 'updated_at' => now()]);
-
-        return ApiResponse::success(null, 'Accès révoqué.');
-    }
-
-    private function activeShare(Request $request, Property $property): ?object
-    {
-        return DB::table('asset_shares')->where(['property_id' => $property->id, 'shared_with_id' => $request->user()->id])->whereNull('revoked_at')->first();
     }
 
     private function authorizeContribution(Request $request, Property $property): void

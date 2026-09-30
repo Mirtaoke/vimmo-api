@@ -30,6 +30,8 @@ Route::prefix('auth')->middleware('throttle:10,1')->group(function () {
     Route::post('/reset-password', [AuthController::class, 'reset']);
     Route::post('/verify-otp', [AuthController::class, 'verifyOtp'])->middleware('throttle:6,1');
     Route::post('/resend-otp', [AuthController::class, 'resendOtp'])->middleware('throttle:3,1');
+    Route::post('/activate-family', [AuthController::class, 'activateFamily'])->middleware('throttle:6,1');
+    Route::post('/resend-family-activation', [AuthController::class, 'resendFamilyActivation'])->middleware('throttle:3,1');
 });
 
 Route::middleware('auth:sanctum')->group(function () {
@@ -98,6 +100,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/documents', [DocumentController::class, 'index']);
     Route::post('/documents', [DocumentController::class, 'store'])->middleware('role:owner');
     Route::get('/documents/{media}/download', [DocumentController::class, 'download']);
+    Route::get('/documents/{media}/chunks', [DocumentController::class, 'downloadChunk']);
     Route::get('/inspections', [InspectionController::class, 'index']);
     Route::post('/inspections', [InspectionController::class, 'store'])->middleware('role:owner');
     Route::get('/inspections/{inspection}', [InspectionController::class, 'show']);
@@ -119,6 +122,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/conversations/{conversation}/messages', [ChatController::class, 'messages']);
     Route::post('/conversations/{conversation}/messages', [ChatController::class, 'send']);
     Route::get('/media/{media}/download', [PatrimonyController::class, 'download']);
+    Route::get('/media/{media}/chunks', [PatrimonyController::class, 'downloadChunk']);
     Route::get('/organizer/events', [EventController::class, 'mine'])->middleware('role:organizer');
     Route::get('/organizer/sales', [EventController::class, 'sales'])->middleware('role:organizer');
     Route::post('/organizer/events', [EventController::class, 'store'])->middleware('role:organizer');

@@ -8,6 +8,7 @@ use App\Models\Media;
 use App\Support\ApiResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Str;
 
 class DocumentController extends Controller
 {
@@ -68,7 +69,45 @@ class DocumentController extends Controller
         abort_unless(Storage::disk($media->disk)->exists($media->path), 404, 'Le fichier demandé est introuvable.');
         $name = $media->metadata['original_name'] ?? basename($media->path);
 
-        return Storage::disk($media->disk)->download($media->path, $name);
+        $content = Storage::disk($media->disk)->get($media->path);
+        $safeName = str_replace(['"', "\r", "\n"], '', Str::ascii($name));
+
+        return response($content, 200, [
+            'Content-Type' => $media->mime_type ?: 'application/octet-stream',
+            'Content-Length' => (string) strlen($content),
+            'Content-Disposition' => 'attachment; filename="'.$safeName.'"',
+            'Cache-Control' => 'private, no-store, max-age=0',
+        ]);
+    }
+
+    public function downloadChunk(Request $request, Media $media)
+    {
+        abort_unless($media->collection === 'documents' && $this->canAccess($request, $media), 403);
+        $disk = Storage::disk($media->disk);
+        abort_unless($disk->exists($media->path), 404, 'Le fichier demandé est introuvable.');
+        $offset = max(0, $request->integer('offset'));
+        $stream = $disk->readStream($media->path);
+        abort_unless(is_resource($stream), 404, 'Le fichier demandé est introuvable.');
+        try {
+            if ($offset > 0) {
+                fseek($stream, $offset);
+            }
+            $bytes = fread($stream, 256 * 1024) ?: '';
+        } finally {
+            fclose($stream);
+        }
+        $total = $disk->size($media->path);
+        $nextOffset = $offset + strlen($bytes);
+
+        return ApiResponse::success([
+            'content' => base64_encode($bytes),
+            'offset' => $offset,
+            'next_offset' => $nextOffset,
+            'total' => $total,
+            'done' => $nextOffset >= $total,
+            'name' => $media->metadata['original_name'] ?? basename($media->path),
+            'mime_type' => $media->mime_type ?: 'application/octet-stream',
+        ]);
     }
 
     private function canAccess(Request $request, Media $media): bool

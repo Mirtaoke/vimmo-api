@@ -3,12 +3,15 @@
 namespace Tests\Feature;
 
 use App\Models\LeaseContract;
+use App\Models\Media;
 use App\Models\Payment;
 use App\Models\Receipt;
 use App\Models\Ticket;
 use App\Models\Unit;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Http\UploadedFile;
+use Illuminate\Support\Facades\Storage;
 use Tests\TestCase;
 
 class BusinessFlowsApiTest extends TestCase
@@ -75,6 +78,32 @@ class BusinessFlowsApiTest extends TestCase
             ->assertOk()->assertJsonCount(2, 'data');
         $this->actingAs($other)->getJson('/api/documents')
             ->assertOk()->assertJsonCount(0, 'data');
+    }
+
+    public function test_owner_can_import_and_tenant_can_download_a_contract_document_in_chunks(): void
+    {
+        $this->seed();
+        Storage::fake('private');
+        $contract = LeaseContract::with(['owner', 'tenant'])->firstOrFail();
+        $content = '%PDF-document-contractuel-vimmo';
+        $uploaded = UploadedFile::fake()->createWithContent('contrat-vimmo.pdf', $content);
+
+        $document = $this->actingAs($contract->owner)->post('/api/documents', [
+            'contract_id' => $contract->id,
+            'title' => 'Contrat signé',
+            'type' => 'contract',
+            'document' => $uploaded,
+        ])->assertCreated()->json('data');
+
+        $this->actingAs($contract->tenant)->getJson('/api/documents?contract_id='.$contract->id)
+            ->assertOk()->assertJsonFragment(['id' => $document['id'], 'title' => 'Contrat signé']);
+        $this->actingAs($contract->tenant)->get('/api/documents/'.$document['id'].'/download')
+            ->assertOk()->assertDownload('contrat-vimmo.pdf');
+        $chunk = $this->actingAs($contract->tenant)->getJson('/api/documents/'.$document['id'].'/chunks?offset=0')
+            ->assertOk()->assertJsonPath('data.done', true)->json('data.content');
+        $this->assertSame($content, base64_decode($chunk));
+        $this->assertDatabaseHas('media', ['id' => $document['id'], 'mediable_type' => LeaseContract::class]);
+        $this->assertNotNull(Media::find($document['id']));
     }
 
     public function test_owner_can_update_and_delete_an_unleased_property(): void

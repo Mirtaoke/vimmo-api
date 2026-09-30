@@ -18,6 +18,8 @@ class PatrimonySharedMail extends Mailable
         public string $ownerName,
         public string $propertyName,
         public string $permissionLabel,
+        public ?string $activationCode = null,
+        public ?string $recipientEmail = null,
     ) {}
 
     /**

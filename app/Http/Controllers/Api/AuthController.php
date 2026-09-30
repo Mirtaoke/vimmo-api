@@ -20,7 +20,7 @@ class AuthController extends Controller
 {
     public function register(Request $request)
     {
-        $data = $request->validate(['first_name' => 'required|string|max:100', 'last_name' => 'required|string|max:100', 'email' => 'required|email', 'phone' => 'required|string|max:30', 'role' => 'required|in:seeker,owner,organizer', 'password' => ['required', 'confirmed', PasswordRule::min(8)]]);
+        $data = $request->validate(['first_name' => 'required|string|max:100', 'last_name' => 'required|string|max:100', 'email' => 'required|email', 'phone' => 'required|string|max:30', 'role' => 'required|in:seeker,owner,organizer,family_member', 'password' => ['required', 'confirmed', PasswordRule::min(8)]]);
         $data['email'] = strtolower(trim($data['email']));
         $data['phone'] = trim($data['phone']);
 
@@ -121,7 +121,7 @@ class AuthController extends Controller
             return ApiResponse::error('Compte suspendu.', 403);
         }
         if (! $user->email_verified_at) {
-            return ApiResponse::error('Votre adresse e-mail doit être vérifiée avant la connexion.', 403);
+            return ApiResponse::error('Votre accès familial doit être activé avant la connexion.', 403, ['requires_family_activation' => $user->role === 'family_member', 'email' => $user->email]);
         }
 
         // Compatibilité avec les comptes créés avant l'ajout des champs séparés.
@@ -202,6 +202,9 @@ class AuthController extends Controller
                 ['email' => ['Adresse e-mail inconnue.']]
             );
         }
+        if (! $user->email_verified_at) {
+            return ApiResponse::error('Activez d’abord votre compte familial avec le code reçu par e-mail.', 422, ['requires_family_activation' => $user->role === 'family_member']);
+        }
         $resendCount = 0;
         if ($data['resend'] ?? false) {
             $current = DB::table('otp_codes')
@@ -263,6 +266,54 @@ class AuthController extends Controller
         });
 
         return ApiResponse::success(null, 'Mot de passe réinitialisé. Vous pouvez vous connecter.');
+    }
+
+    public function activateFamily(Request $request)
+    {
+        $data = $request->validate([
+            'email' => 'required|email',
+            'code' => 'required|digits:6',
+            'password' => ['required', 'confirmed', PasswordRule::min(8)],
+        ]);
+        $user = User::where('email', strtolower(trim($data['email'])))->where('role', 'family_member')->first();
+        $otp = $user ? DB::table('otp_codes')->where('user_id', $user->id)->where('purpose', 'family_activation')->whereNull('used_at')->where('expires_at', '>', now())->latest()->first() : null;
+        if (! $user || ! $otp || ! Hash::check($data['code'], $otp->code_hash)) {
+            return ApiResponse::error('Le code d’activation est incorrect ou expiré.', 422);
+        }
+        DB::transaction(function () use ($user, $otp, $data): void {
+            DB::table('otp_codes')->where('id', $otp->id)->update(['used_at' => now(), 'updated_at' => now()]);
+            $user->forceFill([
+                'password' => Hash::make($data['password']),
+                'email_verified_at' => now(),
+                'is_active' => true,
+            ])->save();
+        });
+
+        return ApiResponse::success(null, 'Votre espace familial est activé. Vous pouvez vous connecter.');
+    }
+
+    public function resendFamilyActivation(Request $request)
+    {
+        $data = $request->validate(['email' => 'required|email']);
+        $user = User::where('email', strtolower(trim($data['email'])))->where('role', 'family_member')->whereNull('email_verified_at')->first();
+        abort_unless($user, 404, 'Aucun accès familial en attente pour cette adresse.');
+        $current = DB::table('otp_codes')->where('user_id', $user->id)->where('purpose', 'family_activation')->whereNull('used_at')->latest()->first();
+        $resendCount = (int) ($current->resend_count ?? 0);
+        abort_if($resendCount >= 5, 429, 'Le nombre maximal de renvois a été atteint.');
+        if ($current?->last_sent_at) {
+            $availableAt = Carbon::parse($current->last_sent_at)->addSeconds(60);
+            if (now()->lt($availableAt)) {
+                return ApiResponse::error('Veuillez patienter avant de demander un nouveau code.', 429, ['retry_after' => max(1, (int) ceil(now()->diffInSeconds($availableAt)))]);
+            }
+        }
+        $code = $this->issueOtp($user, 'family_activation', $resendCount + 1);
+
+        return ApiResponse::success([
+            'sandbox_otp' => app()->environment(['local', 'testing']) ? $code : null,
+            'expires_in' => 600,
+            'resend_available_in' => 60,
+            'remaining_resends' => max(0, 4 - $resendCount),
+        ], 'Un nouveau code d’activation a été envoyé.');
     }
 
     public function verifyOtp(Request $request)
@@ -350,8 +401,16 @@ class AuthController extends Controller
         $code = (string) random_int(100000, 999999);
         DB::table('otp_codes')->where('user_id', $user->id)->where('purpose', $purpose)->whereNull('used_at')->update(['used_at' => now(), 'updated_at' => now()]);
         DB::table('otp_codes')->insert(['user_id' => $user->id, 'destination' => $user->email, 'purpose' => $purpose, 'code_hash' => Hash::make($code), 'resend_count' => $resendCount, 'last_sent_at' => now(), 'expires_at' => now()->addMinutes(10), 'created_at' => now(), 'updated_at' => now()]);
-        $subject = $purpose === 'password_reset' ? 'Réinitialisation de votre mot de passe VIMMO' : 'Votre code de vérification VIMMO';
-        $action = $purpose === 'password_reset' ? 'réinitialisation de mot de passe' : 'vérification';
+        $subject = match ($purpose) {
+            'password_reset' => 'Réinitialisation de votre mot de passe VIMMO',
+            'family_activation' => 'Activation de votre espace familial VIMMO',
+            default => 'Votre code de vérification VIMMO',
+        };
+        $action = match ($purpose) {
+            'password_reset' => 'réinitialisation de mot de passe',
+            'family_activation' => 'activation de votre espace familial',
+            default => 'vérification',
+        };
         Mail::raw("Bonjour {$user->first_name},\n\nVotre code de {$action} VIMMO est : {$code}\n\nCe code expire dans 10 minutes. Si vous n'êtes pas à l'origine de cette demande, ignorez ce message.", function ($message) use ($user, $subject): void {
             $message->to($user->email)->subject($subject);
         });

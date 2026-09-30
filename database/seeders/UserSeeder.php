@@ -23,6 +23,7 @@ class UserSeeder extends Seeder
             ['VIMMO', 'Events', 'events@vimmo.bj', '97000004', 'organizer'],
             ['Grâce', 'Tonato', 'grace.events@vimmo.bj', '97000011', 'organizer'],
             ['Studio', 'Nokoué', 'nokoue.events@vimmo.bj', '97000012', 'organizer'],
+            ['Clarisse', 'Ahouansou', 'famille@vimmo.bj', '97000013', 'family_member'],
         ];
 
         foreach ($users as $user) {

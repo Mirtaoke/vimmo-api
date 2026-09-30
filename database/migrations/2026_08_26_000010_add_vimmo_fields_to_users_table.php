@@ -12,7 +12,7 @@ return new class extends Migration
             $t->string('first_name')->nullable();
             $t->string('last_name')->nullable();
             $t->string('phone')->nullable()->unique();
-            $t->enum('role', ['seeker', 'owner', 'tenant', 'organizer', 'admin'])->default('seeker')->index();
+            $t->enum('role', ['seeker', 'owner', 'tenant', 'organizer', 'family_member', 'admin'])->default('seeker')->index();
             $t->string('avatar_path')->nullable();
             $t->boolean('is_active')->default(true);
             $t->timestamp('phone_verified_at')->nullable();
