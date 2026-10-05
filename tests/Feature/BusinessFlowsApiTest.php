@@ -121,6 +121,40 @@ class BusinessFlowsApiTest extends TestCase
         $this->assertDatabaseMissing('properties', ['id' => $created['id']]);
     }
 
+    public function test_owner_cannot_create_tenant_with_existing_email_or_phone(): void
+    {
+        $this->seed();
+        $owner = User::where('role', 'owner')->firstOrFail();
+        $existing = User::where('role', 'tenant')->firstOrFail();
+        $unit = Unit::whereHas('property', fn ($query) => $query->where('owner_id', $owner->id))
+            ->whereDoesntHave('contracts', fn ($query) => $query->where('status', 'active'))
+            ->firstOrFail();
+        $payload = [
+            'first_name' => 'Nouvelle',
+            'last_name' => 'Locataire',
+            'email' => 'nouvelle@vimmo.bj',
+            'phone' => '96000000',
+            'starts_at' => now()->toDateString(),
+            'rent_amount' => 125000,
+            'due_day' => 5,
+        ];
+
+        $this->actingAs($owner)->postJson('/api/units/'.$unit->id.'/tenant', [
+            ...$payload,
+            'email' => '  '.strtoupper($existing->email).'  ',
+        ])->assertUnprocessable()
+            ->assertJsonPath('errors.email.0', 'Cette adresse e-mail appartient déjà à un utilisateur.');
+
+        $formattedPhone = implode(' ', str_split((string) $existing->phone, 2));
+        $this->actingAs($owner)->postJson('/api/units/'.$unit->id.'/tenant', [
+            ...$payload,
+            'phone' => $formattedPhone,
+        ])->assertUnprocessable()
+            ->assertJsonPath('errors.phone.0', 'Ce numéro de téléphone appartient déjà à un utilisateur.');
+
+        $this->assertDatabaseMissing('users', ['email' => 'nouvelle@vimmo.bj']);
+    }
+
     public function test_owner_can_update_and_delete_an_unleased_unit(): void
     {
         $this->seed();

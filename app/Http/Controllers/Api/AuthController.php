@@ -20,6 +20,10 @@ class AuthController extends Controller
 {
     public function register(Request $request)
     {
+        $request->merge([
+            'email' => strtolower(trim((string) $request->input('email'))),
+            'phone' => preg_replace('/[\s().-]+/', '', trim((string) $request->input('phone'))),
+        ]);
         $data = $request->validate(['first_name' => 'required|string|max:100', 'last_name' => 'required|string|max:100', 'email' => 'required|email', 'phone' => 'required|string|max:30', 'role' => 'required|in:seeker,owner,organizer,family_member', 'password' => ['required', 'confirmed', PasswordRule::min(8)]]);
         $data['email'] = strtolower(trim($data['email']));
         $data['phone'] = trim($data['phone']);

@@ -35,6 +35,10 @@ class RentalController extends Controller
     {
         abort_unless($unit->property()->where('owner_id', $r->user()->id)->exists(), 403);
         abort_if($unit->contracts()->where('status', 'active')->exists(), 422, 'Ce logement possède déjà un contrat actif.');
+        $r->merge([
+            'email' => strtolower(trim((string) $r->input('email'))),
+            'phone' => preg_replace('/[\s().-]+/', '', trim((string) $r->input('phone'))),
+        ]);
         $d = $r->validate([
             'first_name' => 'required|string|max:100',
             'last_name' => 'required|string|max:100',
@@ -46,6 +50,18 @@ class RentalController extends Controller
             'deposit_amount' => 'nullable|numeric|min:0',
             'charges_amount' => 'nullable|numeric|min:0',
             'due_day' => 'required|integer|between:1,28',
+        ], [
+            'email.unique' => 'Cette adresse e-mail appartient déjà à un utilisateur.',
+            'phone.unique' => 'Ce numéro de téléphone appartient déjà à un utilisateur.',
+            'due_day.between' => 'Le jour d’échéance doit être compris entre 1 et 28.',
+        ], [
+            'first_name' => 'prénom',
+            'last_name' => 'nom',
+            'email' => 'adresse e-mail',
+            'phone' => 'numéro de téléphone',
+            'starts_at' => 'date de début',
+            'rent_amount' => 'loyer mensuel',
+            'due_day' => 'jour d’échéance mensuelle',
         ]);
 
         return DB::transaction(function () use ($d, $r, $unit) {
