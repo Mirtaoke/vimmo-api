@@ -17,7 +17,7 @@ class MarketplaceController extends Controller
 {
     public function listings(Request $r)
     {
-        $q = Listing::with(['unit.property.media', 'media', 'owner:id,name,phone'])->where('status', 'published');
+        $q = Listing::with(['unit.media', 'unit.property.media', 'media', 'owner:id,name,phone'])->where('status', 'published');
         if ($r->filled('type')) {
             $types = collect(explode(',', $r->type))->map(fn ($type) => strtolower(trim($type)))->filter()->values();
             $q->whereHas('unit', fn ($unit) => $unit->whereIn(DB::raw('LOWER(type)'), $types));
@@ -83,7 +83,7 @@ class MarketplaceController extends Controller
     {
         abort_unless($listing->status === 'published', 404);
 
-        return ApiResponse::success($listing->load(['unit.property.media', 'owner:id,name,phone', 'media']));
+        return ApiResponse::success($listing->load(['unit.media', 'unit.property.media', 'owner:id,name,phone', 'media']));
     }
 
     public function properties(Request $r)
