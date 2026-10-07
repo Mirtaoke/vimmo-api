@@ -41,7 +41,7 @@ return ApiResponse::success($q->latest()->get());
 
     public function store(Request $r)
     {
-        $d = $r->validate(['unit_id' => 'required|exists:units,id', 'category' => 'required|in:fuite,panne_electrique,serrure,plomberie,climatisation,toiture,autre', 'title' => 'required|string|max:180', 'description' => 'required|string', 'priority' => 'nullable|in:low,normal,high,urgent', 'attachments' => 'nullable|array|max:5', 'attachments.*' => 'file|mimes:jpg,jpeg,png,mp4,mov,pdf|max:30720']);
+        $d = $r->validate(['unit_id' => 'required|exists:units,id', 'category' => 'required|in:fuite,panne_electrique,serrure,plomberie,climatisation,toiture,autre', 'title' => 'required|string|max:180', 'description' => 'required|string', 'availability_notes' => 'nullable|string|max:1000', 'priority' => 'nullable|in:low,normal,high,urgent', 'attachments' => 'nullable|array|max:5', 'attachments.*' => 'file|mimes:jpg,jpeg,png,mp4,mov,pdf|max:30720']);
         $unit = Unit::findOrFail($d['unit_id']);
         abort_unless($unit->contracts()->where('tenant_id', $r->user()->id)->where('status', 'active')->exists(), 403, 'Ce logement n’est pas lié à votre contrat actif.');
         $attachments = $r->file('attachments', []);
@@ -62,6 +62,25 @@ return ApiResponse::success($q->latest()->get());
         $this->notify($maintenance->reported_by, 'maintenance', 'Intervention mise à jour', 'Votre réclamation « '.$maintenance->title.' » est maintenant : '.$d['status'], ['maintenance_id' => $maintenance->id]);
 
         return ApiResponse::success($maintenance->fresh(['comments', 'media']), 'Intervention mise à jour.');
+    }
+
+    public function tenantStatus(Request $r, MaintenanceRequest $maintenance)
+    {
+        abort_unless($maintenance->reported_by === $r->user()->id, 403);
+        $d = $r->validate([
+            'status' => 'required|in:processing,resolved',
+            'availability_notes' => 'nullable|string|max:1000',
+        ]);
+        $maintenance->update($d);
+        $this->notify(
+            $maintenance->unit->property->owner_id,
+            'maintenance',
+            'Signalement mis à jour',
+            'Le locataire a mis à jour le signalement « '.$maintenance->title.' ».',
+            ['maintenance_id' => $maintenance->id],
+        );
+
+        return ApiResponse::success($maintenance->fresh(['comments', 'media']), 'Signalement mis à jour.');
     }
 
     public function comment(Request $r, MaintenanceRequest $maintenance)

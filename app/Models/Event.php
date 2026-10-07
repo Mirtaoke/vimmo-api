@@ -3,10 +3,13 @@
 namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Support\Facades\URL;
 
 class Event extends Model
 {
     protected $guarded = [];
+
+    protected $appends = ['cover_url'];
 
     protected function casts(): array
     {
@@ -36,5 +39,19 @@ class Event extends Model
     public function category()
     {
         return $this->belongsTo(EventCategory::class, 'event_category_id');
+    }
+
+    public function getCoverUrlAttribute(): ?string
+    {
+        if (! $this->cover_path) {
+            return null;
+        }
+
+        return URL::temporarySignedRoute(
+            'events.cover',
+            now()->addDays(30),
+            ['event' => $this->getKey()],
+            absolute: false,
+        );
     }
 }

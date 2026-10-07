@@ -10,7 +10,15 @@ class Unit extends Model
 
     protected function casts(): array
     {
-        return ['amenities' => 'array', 'surface' => 'decimal:2', 'monthly_rent' => 'decimal:2'];
+        return [
+            'amenities' => 'array',
+            'amenity_details' => 'array',
+            'surface' => 'decimal:2',
+            'monthly_rent' => 'decimal:2',
+            'monthly_charges' => 'decimal:2',
+            'deposit_amount' => 'decimal:2',
+            'advance_months' => 'integer',
+        ];
     }
 
     public function property()

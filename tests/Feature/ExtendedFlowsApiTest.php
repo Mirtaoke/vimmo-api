@@ -11,7 +11,9 @@ use App\Models\Receipt;
 use App\Models\RentSchedule;
 use App\Models\TicketType;
 use App\Models\User;
+use App\Services\ListingAlertService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Storage;
 use Tests\TestCase;
 
 class ExtendedFlowsApiTest extends TestCase
@@ -28,6 +30,23 @@ class ExtendedFlowsApiTest extends TestCase
         $order = $this->actingAs($seeker)->postJson('/api/events/'.$event->id.'/orders', ['ticket_type_id' => $type->id, 'quantity' => 2, 'payment_method' => 'mobile_money'])->assertCreated()->assertJsonPath('data.payment.status', 'paid')->json('data');
         $this->assertDatabaseCount('tickets', 4);
         $this->assertDatabaseHas('ticket_payments', ['ticket_order_id' => $order['id'], 'status' => 'paid']);
+    }
+
+    public function test_event_cover_is_served_without_a_public_storage_symlink(): void
+    {
+        $this->seed();
+        Storage::fake('public');
+        Storage::disk('public')->put('events/cover.jpg', 'event-cover');
+        $event = Event::where('status', 'published')->firstOrFail();
+        $event->update(['cover_path' => 'events/cover.jpg']);
+
+        $coverUrl = $this->getJson('/api/events/'.$event->id)
+            ->assertOk()
+            ->json('data.cover_url');
+
+        $this->get($coverUrl)
+            ->assertOk()
+            ->assertHeader('content-type', 'image/jpeg');
     }
 
     public function test_seeker_can_apply_and_owner_can_accept(): void
@@ -98,6 +117,97 @@ class ExtendedFlowsApiTest extends TestCase
         $this->seed();
         $event = Event::whereDoesntHave('orders', fn ($query) => $query->where('status', 'paid'))->firstOrFail();
         $organizer = User::findOrFail($event->organizer_id);
-        $this->actingAs($organizer)->deleteJson('/api/organizer/events/'.$event->id)->assertOk()->assertJsonPath('data.status','suspended');
+        $this->actingAs($organizer)->deleteJson('/api/organizer/events/'.$event->id)->assertOk()->assertJsonPath('data.status', 'suspended');
+    }
+
+    public function test_marketplace_filters_french_amenities_and_returns_complete_favorites(): void
+    {
+        $this->seed();
+        $seeker = User::where('role', 'seeker')->firstOrFail();
+        $listing = Listing::with('unit')->whereHas('unit', fn ($query) => $query->whereJsonContains('amenities', 'climatisation'))->firstOrFail();
+
+        $this->getJson('/api/listings?air_conditioning=1&availability='.$listing->unit->status)
+            ->assertOk()
+            ->assertJsonFragment(['id' => $listing->id]);
+
+        $this->actingAs($seeker)->postJson('/api/listings/'.$listing->id.'/favorite')->assertOk();
+        $this->actingAs($seeker)->getJson('/api/favorites')
+            ->assertOk()
+            ->assertJsonPath('data.0.id', $listing->id)
+            ->assertJsonStructure(['data' => [['unit' => ['media', 'property' => ['media']], 'owner']]]);
+    }
+
+    public function test_seeker_can_toggle_and_delete_a_saved_search(): void
+    {
+        $this->seed();
+        $seeker = User::where('role', 'seeker')->firstOrFail();
+        $created = $this->actingAs($seeker)->postJson('/api/saved-searches', [
+            'name' => 'Appartement à Cotonou',
+            'criteria' => ['type' => 'Appartement', 'city' => 'Cotonou'],
+            'alerts_enabled' => true,
+        ])->assertCreated();
+        $searchId = $created->json('data.id');
+
+        $this->actingAs($seeker)->patchJson('/api/saved-searches/'.$searchId, [
+            'alerts_enabled' => false,
+        ])->assertOk()->assertJsonPath('data.alerts_enabled', 0);
+
+        $this->actingAs($seeker)->deleteJson('/api/saved-searches/'.$searchId)
+            ->assertOk();
+        $this->assertDatabaseMissing('saved_searches', ['id' => $searchId]);
+    }
+
+    public function test_saved_search_alerts_match_the_same_advanced_filters_as_marketplace(): void
+    {
+        $this->seed();
+        $seeker = User::where('role', 'seeker')->firstOrFail();
+        $listing = Listing::with('unit.property')
+            ->whereHas('unit', fn ($query) => $query->whereJsonContains('amenities', 'climatisation'))
+            ->firstOrFail();
+        $this->actingAs($seeker)->postJson('/api/saved-searches', [
+            'name' => 'Climatisé à Cotonou',
+            'criteria' => [
+                'city' => $listing->unit->property->city,
+                'air_conditioning' => '1',
+                'availability' => $listing->unit->status,
+                'max_price' => (float) $listing->price,
+            ],
+            'alerts_enabled' => true,
+        ])->assertCreated();
+
+        \DB::table('notifications')
+            ->where('user_id', $seeker->id)
+            ->where('type', 'property_alert')
+            ->delete();
+        app(ListingAlertService::class)->notifyFor($listing);
+
+        $this->assertTrue(\DB::table('notifications')
+            ->where('user_id', $seeker->id)
+            ->where('type', 'property_alert')
+            ->where('data', 'like', '%"listing_id":'.$listing->id.'%')
+            ->exists());
+    }
+
+    public function test_conversations_are_limited_to_the_users_linked_to_the_property(): void
+    {
+        $this->seed();
+        $listing = Listing::with('unit')->firstOrFail();
+        $seeker = User::where('role', 'seeker')->firstOrFail();
+        $owner = User::findOrFail($listing->owner_id);
+
+        $this->actingAs($seeker)->postJson('/api/conversations', [
+            'participant_id' => $owner->id,
+            'listing_id' => $listing->id,
+            'unit_id' => $listing->unit_id,
+            'subject' => $listing->title,
+        ])->assertSuccessful()
+            ->assertJsonStructure(['data' => ['unit' => ['media', 'property' => ['media']]]]);
+
+        $unrelatedOwner = User::factory()->create(['role' => 'owner']);
+        $this->actingAs($seeker)->postJson('/api/conversations', [
+            'participant_id' => $unrelatedOwner->id,
+            'listing_id' => $listing->id,
+            'unit_id' => $listing->unit_id,
+        ])->assertForbidden();
     }
 }

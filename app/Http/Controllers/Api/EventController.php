@@ -12,10 +12,27 @@ use App\Models\TicketType;
 use App\Support\ApiResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 
 class EventController extends Controller
 {
+    public function cover(Event $event)
+    {
+        abort_unless($event->cover_path, 404, 'Couverture introuvable.');
+        $disk = Storage::disk('public');
+        abort_unless($disk->exists($event->cover_path), 404, 'Couverture introuvable.');
+        $content = $disk->get($event->cover_path);
+        $mimeType = $disk->mimeType($event->cover_path) ?: 'image/jpeg';
+
+        return response($content, 200, [
+            'Content-Type' => $mimeType,
+            'Content-Length' => (string) strlen($content),
+            'Content-Disposition' => 'inline',
+            'Cache-Control' => 'private, max-age=86400',
+        ]);
+    }
+
     public function categories()
     {
         return ApiResponse::success(EventCategory::orderBy('name')->get());

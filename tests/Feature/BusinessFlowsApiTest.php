@@ -25,7 +25,7 @@ class BusinessFlowsApiTest extends TestCase
 
         $this->actingAs($owner)->getJson('/api/dashboard')
             ->assertOk()
-            ->assertJsonStructure(['data' => ['properties', 'rental_properties', 'private_properties', 'units', 'occupied_units', 'tenants', 'active_contracts', 'active_listings', 'pending_payments', 'open_maintenance', 'pending_inspections', 'rent_received', 'rent_received_month', 'rent_due_month', 'rent_collected_for_month', 'collection_rate', 'rent_pending', 'unread_messages', 'unread_notifications']]);
+            ->assertJsonStructure(['data' => ['properties', 'rental_properties', 'private_properties', 'units', 'occupied_units', 'tenants', 'active_contracts', 'active_listings', 'pending_visits', 'pending_applications', 'pending_payments', 'open_maintenance', 'pending_inspections', 'rent_received', 'rent_received_month', 'rent_due_month', 'rent_collected_for_month', 'collection_rate', 'rent_pending', 'unread_messages', 'unread_notifications']]);
     }
 
     public function test_new_owner_dashboard_contains_only_zero_values(): void
@@ -34,9 +34,46 @@ class BusinessFlowsApiTest extends TestCase
 
         $response = $this->actingAs($owner)->getJson('/api/dashboard')->assertOk();
 
-        foreach (['properties', 'rental_properties', 'private_properties', 'units', 'occupied_units', 'tenants', 'active_contracts', 'active_listings', 'pending_payments', 'open_maintenance', 'pending_inspections', 'rent_received', 'rent_received_month', 'rent_due_month', 'rent_collected_for_month', 'collection_rate', 'rent_pending', 'unread_messages', 'unread_notifications'] as $key) {
+        foreach (['properties', 'rental_properties', 'private_properties', 'units', 'occupied_units', 'tenants', 'active_contracts', 'active_listings', 'pending_visits', 'pending_applications', 'pending_payments', 'open_maintenance', 'pending_inspections', 'rent_received', 'rent_received_month', 'rent_due_month', 'rent_collected_for_month', 'collection_rate', 'rent_pending', 'unread_messages', 'unread_notifications'] as $key) {
             $this->assertEquals(0, $response->json('data.'.$key), "La valeur {$key} doit être nulle pour un nouveau propriétaire.");
         }
+    }
+
+    public function test_tenant_dashboard_returns_the_real_next_rent_and_payment_summary(): void
+    {
+        $this->seed();
+        $tenant = User::where('role', 'tenant')->firstOrFail();
+
+        $this->actingAs($tenant)->getJson('/api/dashboard')
+            ->assertOk()
+            ->assertJsonStructure([
+                'data' => [
+                    'contract' => ['property_name', 'unit_reference'],
+                    'next_rent',
+                    'last_payment',
+                    'rent_paid',
+                    'pending_payments',
+                    'receipts',
+                    'pending_inspections',
+                    'open_maintenance',
+                ],
+            ]);
+    }
+
+    public function test_new_tenant_dashboard_has_no_fictitious_rental_data(): void
+    {
+        $tenant = User::factory()->create(['role' => 'tenant']);
+
+        $this->actingAs($tenant)->getJson('/api/dashboard')
+            ->assertOk()
+            ->assertJsonPath('data.contract', null)
+            ->assertJsonPath('data.next_rent', null)
+            ->assertJsonPath('data.last_payment', null)
+            ->assertJsonPath('data.rent_paid', 0)
+            ->assertJsonPath('data.pending_payments', 0)
+            ->assertJsonPath('data.receipts', 0)
+            ->assertJsonPath('data.pending_inspections', 0)
+            ->assertJsonPath('data.open_maintenance', 0);
     }
 
     public function test_organizer_can_read_sales_and_scan_ticket_only_once(): void

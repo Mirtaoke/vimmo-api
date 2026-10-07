@@ -62,7 +62,7 @@ class PatrimonyController extends Controller
 
     public function store(Request $request)
     {
-        $data = $request->validate(['name' => 'required|string', 'type' => 'required|string', 'description' => 'nullable|string', 'surface' => 'nullable|numeric', 'address' => 'nullable|string', 'district' => 'nullable|string', 'commune' => 'nullable|string', 'cadastral_reference' => 'nullable|string', 'latitude' => 'nullable|numeric|between:-90,90', 'longitude' => 'nullable|numeric|between:-180,180']);
+        $data = $request->validate(['name' => 'required|string', 'type' => 'required|string', 'description' => 'nullable|string', 'surface' => 'nullable|numeric', 'address' => 'nullable|string', 'district' => 'nullable|string', 'commune' => 'nullable|string', 'cadastral_reference' => 'nullable|string', 'latitude' => 'nullable|numeric|between:-90,90', 'longitude' => 'nullable|numeric|between:-180,180', 'metadata' => 'nullable|array']);
 
         return ApiResponse::success(Property::create([...$data, 'owner_id' => $request->user()->id, 'is_private' => true]), 'Bien ajouté au coffre.', 201);
     }
@@ -81,6 +81,7 @@ class PatrimonyController extends Controller
             'cadastral_reference' => 'nullable|string|max:180',
             'latitude' => 'nullable|numeric|between:-90,90',
             'longitude' => 'nullable|numeric|between:-180,180',
+            'metadata' => 'nullable|array',
         ]);
         $property->update($data);
 
@@ -238,7 +239,7 @@ class PatrimonyController extends Controller
         DB::table('asset_shares')->where('id', $share)->update(['revoked_at' => now(), 'updated_at' => now()]);
         $remainingShares = DB::table('asset_shares')->where('shared_with_id', $row->shared_with_id)->whereNull('revoked_at')->exists();
         if (! $remainingShares) {
-            User::where('id', $row->shared_with_id)->where('role', 'family_member')->update(['is_active' => false, 'updated_at' => now()]);
+            User::where('id', $row->shared_with_id)->where('role', 'family_member')->delete();
         }
 
         return ApiResponse::success(null, 'Accès révoqué.');

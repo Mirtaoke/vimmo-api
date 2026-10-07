@@ -24,6 +24,9 @@ Route::get('/media/{media}/view', [MarketplaceController::class, 'viewMedia'])
     ->name('media.view');
 Route::get('/event-categories', [EventController::class, 'categories']);
 Route::get('/events', [EventController::class, 'index']);
+Route::get('/events/{event}/cover', [EventController::class, 'cover'])
+    ->middleware('signed:relative')
+    ->name('events.cover');
 Route::get('/events/{event}', [EventController::class, 'show']);
 Route::get('/receipts/verify/{token}', [RentalController::class, 'verifyReceipt']);
 Route::prefix('auth')->middleware('throttle:10,1')->group(function () {
@@ -47,18 +50,19 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::put('/auth/profile', [AuthController::class, 'update']);
     Route::put('/auth/password', [AuthController::class, 'password']);
     Route::get('/audit-logs', [AuditController::class, 'index']);
-    Route::get('/favorites', [MarketplaceController::class, 'favorites']);
-    Route::post('/listings/{listing}/favorite', [MarketplaceController::class, 'favorite']);
-    Route::delete('/listings/{listing}/favorite', [MarketplaceController::class, 'unfavorite']);
-    Route::get('/rental-applications', [RentalApplicationController::class, 'index']);
-    Route::post('/listings/{listing}/applications', [RentalApplicationController::class, 'store']);
+    Route::get('/favorites', [MarketplaceController::class, 'favorites'])->middleware('role:seeker');
+    Route::post('/listings/{listing}/favorite', [MarketplaceController::class, 'favorite'])->middleware('role:seeker');
+    Route::delete('/listings/{listing}/favorite', [MarketplaceController::class, 'unfavorite'])->middleware('role:seeker');
+    Route::get('/rental-applications', [RentalApplicationController::class, 'index'])->middleware('role:owner,seeker');
+    Route::post('/listings/{listing}/applications', [RentalApplicationController::class, 'store'])->middleware('role:seeker');
     Route::patch('/rental-applications/{application}/status', [RentalApplicationController::class, 'status'])->middleware('role:owner');
-    Route::delete('/rental-applications/{application}', [RentalApplicationController::class, 'withdraw']);
-    Route::get('/saved-searches', [MarketplaceController::class, 'savedSearches']);
-    Route::post('/saved-searches', [MarketplaceController::class, 'saveSearch']);
-    Route::delete('/saved-searches/{search}', [MarketplaceController::class, 'deleteSearch']);
-    Route::get('/visits', [MarketplaceController::class, 'visits']);
-    Route::post('/listings/{listing}/visits', [MarketplaceController::class, 'visit']);
+    Route::delete('/rental-applications/{application}', [RentalApplicationController::class, 'withdraw'])->middleware('role:seeker');
+    Route::get('/saved-searches', [MarketplaceController::class, 'savedSearches'])->middleware('role:seeker');
+    Route::post('/saved-searches', [MarketplaceController::class, 'saveSearch'])->middleware('role:seeker');
+    Route::patch('/saved-searches/{search}', [MarketplaceController::class, 'updateSearch'])->middleware('role:seeker');
+    Route::delete('/saved-searches/{search}', [MarketplaceController::class, 'deleteSearch'])->middleware('role:seeker');
+    Route::get('/visits', [MarketplaceController::class, 'visits'])->middleware('role:owner,seeker');
+    Route::post('/listings/{listing}/visits', [MarketplaceController::class, 'visit'])->middleware('role:seeker');
     Route::patch('/visits/{visit}/status', [MarketplaceController::class, 'visitStatus'])->middleware('role:owner');
     Route::middleware('role:owner')->group(function () {
         Route::get('/properties', [MarketplaceController::class, 'properties']);
@@ -116,6 +120,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/inspections/{inspection}/download', [InspectionController::class, 'downloadPdf']);
     Route::get('/maintenance', [MaintenanceController::class, 'index']);
     Route::post('/maintenance', [MaintenanceController::class, 'store'])->middleware('role:tenant');
+    Route::patch('/maintenance/{maintenance}/tenant-status', [MaintenanceController::class, 'tenantStatus'])->middleware('role:tenant');
     Route::get('/maintenance/{maintenance}', [MaintenanceController::class, 'show']);
     Route::post('/maintenance/{maintenance}/comments', [MaintenanceController::class, 'comment']);
     Route::get('/arrears', [ArrearController::class, 'index'])->middleware('role:owner');

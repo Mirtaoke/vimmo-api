@@ -33,7 +33,7 @@ class Media extends Model
 
         return URL::temporarySignedRoute(
             'media.view',
-            now()->addHours(6),
+            now()->addDays(30),
             ['media' => $this->getKey()],
             absolute: false,
         );

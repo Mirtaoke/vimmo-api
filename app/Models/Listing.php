@@ -10,7 +10,15 @@ class Listing extends Model
 
     protected function casts(): array
     {
-        return ['is_verified' => 'boolean', 'published_at' => 'datetime', 'available_from' => 'date', 'price' => 'decimal:2'];
+        return [
+            'is_verified' => 'boolean',
+            'published_at' => 'datetime',
+            'available_from' => 'date',
+            'price' => 'decimal:2',
+            'deposit' => 'decimal:2',
+            'charges' => 'decimal:2',
+            'advance_amount' => 'decimal:2',
+        ];
     }
 
     public function owner()

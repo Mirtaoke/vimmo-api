@@ -4,11 +4,22 @@ namespace Tests\Feature;
 
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\DB;
 use Tests\TestCase;
 
 class AuthApiTest extends TestCase
 {
     use RefreshDatabase;
+
+    public function test_validation_errors_use_french_business_labels(): void
+    {
+        $this->postJson('/api/auth/register', [])
+            ->assertUnprocessable()
+            ->assertJsonPath('errors.first_name.0', 'Le champ prénom est requis.')
+            ->assertJsonPath('errors.last_name.0', 'Le champ nom est requis.')
+            ->assertJsonPath('errors.phone.0', 'Le champ numéro de téléphone est requis.')
+            ->assertJsonPath('errors.password.0', 'Le champ mot de passe est requis.');
+    }
 
     public function test_registration_stays_pending_until_otp_is_verified(): void
     {
@@ -68,7 +79,7 @@ class AuthApiTest extends TestCase
             ->assertJsonPath('data.expires_in', 600)
             ->assertJsonPath('data.remaining_resends', 4);
 
-        \Illuminate\Support\Facades\DB::table('pending_registrations')
+        DB::table('pending_registrations')
             ->where('email', 'mina@example.com')
             ->update(['resend_count' => 5, 'last_sent_at' => now()->subMinutes(2)]);
         $this->travel(61)->seconds();
@@ -143,7 +154,7 @@ class AuthApiTest extends TestCase
             ->assertOk()
             ->assertJsonPath('data.remaining_resends', 4);
 
-        \Illuminate\Support\Facades\DB::table('otp_codes')
+        DB::table('otp_codes')
             ->where('purpose', 'password_reset')
             ->whereNull('used_at')
             ->update(['resend_count' => 5, 'last_sent_at' => now()->subMinutes(2)]);

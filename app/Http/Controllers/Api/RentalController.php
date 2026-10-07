@@ -36,7 +36,6 @@ class RentalController extends Controller
     {
         abort_unless($unit->property()->where('owner_id', $r->user()->id)->exists(), 403);
         abort_if($unit->property()->where('is_private', true)->exists(), 422, 'Un locataire ne peut être associé qu’à un bien locatif.');
-        abort_if($unit->contracts()->where('status', 'active')->exists(), 422, 'Ce logement possède déjà un contrat actif.');
         $r->merge([
             'email' => strtolower(trim((string) $r->input('email'))),
             'phone' => preg_replace('/[\s().-]+/', '', trim((string) $r->input('phone'))),
@@ -87,6 +86,12 @@ class RentalController extends Controller
         }
 
         return DB::transaction(function () use ($d, $r, $unit, $rentAmount) {
+            $lockedUnit = Unit::query()->lockForUpdate()->findOrFail($unit->id);
+            abort_if(
+                $lockedUnit->contracts()->where('status', 'active')->exists(),
+                422,
+                'Ce logement possède déjà un contrat actif.',
+            );
             $tenantFields = collect($d)->only(['first_name', 'last_name', 'email', 'phone'])->all();
             $tenant = User::create([...$tenantFields, 'name' => $d['first_name'].' '.$d['last_name'], 'role' => 'tenant', 'password' => Hash::make('password'), 'email_verified_at' => now(), 'phone_verified_at' => now()]);
             $contract = LeaseContract::create([
@@ -115,7 +120,7 @@ class RentalController extends Controller
                 RentSchedule::create(['lease_contract_id' => $contract->id, 'period_start' => $start->copy()->startOfMonth(), 'period_end' => $start->copy()->endOfMonth(), 'due_date' => $dueDate, 'amount' => $rentAmount, 'status' => $status]);
                 $start->addMonth();
             }
-            $unit->update(['status' => 'occupied']);
+            $lockedUnit->update(['status' => 'occupied']);
 
             return ApiResponse::success(['tenant' => $tenant, 'contract' => $contract->load('schedules'), 'default_password' => 'password', 'unit_id' => $unit->id], 'Compte locataire créé et lié au logement.', 201);
         });
@@ -144,6 +149,12 @@ class RentalController extends Controller
         abort_if($unit->property->is_private, 422, 'Un contrat locatif ne peut pas être créé pour un bien familial.');
 
         return DB::transaction(function () use ($d, $r, $unit) {
+            $lockedUnit = Unit::query()->lockForUpdate()->findOrFail($unit->id);
+            abort_if(
+                $lockedUnit->contracts()->where('status', 'active')->exists(),
+                422,
+                'Ce logement possède déjà un contrat actif.',
+            );
             $contract = LeaseContract::create([...$d, 'owner_id' => $r->user()->id, 'reference' => 'CTR-'.now()->format('Y').'-'.strtoupper(Str::random(6)), 'status' => 'active']);
             $contractStart = Carbon::parse($d['starts_at'])->startOfDay();
             $firstDueDate = $contractStart->copy()->day((int) $d['due_day']);
@@ -157,7 +168,7 @@ class RentalController extends Controller
                 $status = $dueDate->lt(today()) ? 'late' : ($dueDate->isToday() ? 'due' : 'upcoming');
                 RentSchedule::create(['lease_contract_id' => $contract->id, 'period_start' => $start->copy()->startOfMonth(), 'period_end' => $start->copy()->endOfMonth(), 'due_date' => $dueDate, 'amount' => $d['rent_amount'], 'status' => $status]);
                 $start->addMonth();
-            }$unit->update(['status' => 'occupied']);
+            }$lockedUnit->update(['status' => 'occupied']);
 
             return ApiResponse::success($contract->load('schedules'), 'Contrat et échéances créés.', 201);
         });
@@ -165,7 +176,10 @@ class RentalController extends Controller
 
     public function schedules(Request $r)
     {
-        $q = RentSchedule::with(['contract.unit.property', 'contract.tenant:id,name'])->whereHas('contract', fn ($x) => $x->where($r->user()->role === 'owner' ? 'owner_id' : 'tenant_id', $r->user()->id));
+        $q = RentSchedule::with(['contract.unit.property', 'contract.tenant:id,name'])
+            ->whereHas('contract', fn ($x) => $x->where($r->user()->role === 'owner' ? 'owner_id' : 'tenant_id', $r->user()->id))
+            ->whereHas('contract', fn ($x) => $x->whereColumn('rent_schedules.due_date', '>=', 'lease_contracts.starts_at'))
+            ->where('amount', '>', 0);
         $rows = $q->orderBy('due_date')->get();
         foreach ($rows as $schedule) {
             $amount = (float) $schedule->amount;

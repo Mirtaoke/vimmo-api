@@ -29,7 +29,7 @@ class PatrimonySharingApiTest extends TestCase
         $this->assertDatabaseHas('otp_codes', ['user_id' => $recipient->id, 'purpose' => 'family_activation']);
         $shareId = \DB::table('asset_shares')->where('property_id', $property->id)->where('shared_with_id', $recipient->id)->value('id');
         $this->actingAs($owner)->deleteJson('/api/patrimony/shares/'.$shareId)->assertOk();
-        $this->assertFalse($recipient->fresh()->is_active);
+        $this->assertModelMissing($recipient);
     }
 
     public function test_existing_user_receives_shared_property(): void

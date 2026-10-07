@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Support\ApiResponse;
+use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 
@@ -31,6 +32,16 @@ class DashboardController extends Controller
                 'tenants' => (clone $contracts)->where('status', 'active')->distinct('tenant_id')->count('tenant_id'),
                 'active_contracts' => (clone $contracts)->where('status', 'active')->count(),
                 'active_listings' => DB::table('listings')->where('owner_id', $u->id)->where('status', 'published')->count(),
+                'pending_visits' => DB::table('visit_requests')
+                    ->join('listings', 'listings.id', '=', 'visit_requests.listing_id')
+                    ->where('listings.owner_id', $u->id)
+                    ->whereIn('visit_requests.status', ['requested', 'accepted', 'confirmed'])
+                    ->count(),
+                'pending_applications' => DB::table('rental_applications')
+                    ->join('listings', 'listings.id', '=', 'rental_applications.listing_id')
+                    ->where('listings.owner_id', $u->id)
+                    ->whereIn('rental_applications.status', ['submitted', 'reviewing'])
+                    ->count(),
                 'pending_payments' => (clone $ownerPayments)->where('payments.status', 'pending')->count(),
                 'open_maintenance' => DB::table('maintenance_requests')->join('units', 'units.id', '=', 'maintenance_requests.unit_id')->join('properties', 'properties.id', '=', 'units.property_id')->where('properties.owner_id', $u->id)->whereNotIn('maintenance_requests.status', ['resolved', 'closed'])->count(),
                 'pending_inspections' => DB::table('inspections')->join('lease_contracts', 'lease_contracts.id', '=', 'inspections.lease_contract_id')->where('lease_contracts.owner_id', $u->id)->where('inspections.status', '!=', 'completed')->count(),
@@ -46,19 +57,59 @@ class DashboardController extends Controller
                     ->sum(DB::raw('CASE WHEN rent_schedules.amount > rent_schedules.paid_amount THEN rent_schedules.amount - rent_schedules.paid_amount ELSE 0 END')),
             ];
         } elseif ($u->role === 'tenant') {
-            $contract = DB::table('lease_contracts')->where('tenant_id', $u->id)->where('status', 'active')->first();
+            $contract = DB::table('lease_contracts')
+                ->join('units', 'units.id', '=', 'lease_contracts.unit_id')
+                ->join('properties', 'properties.id', '=', 'units.property_id')
+                ->where('lease_contracts.tenant_id', $u->id)
+                ->where('lease_contracts.status', 'active')
+                ->select(
+                    'lease_contracts.*',
+                    'units.reference as unit_reference',
+                    'properties.name as property_name',
+                )
+                ->first();
             $contractId = $contract?->id;
             $unitId = $contract?->unit_id;
+            $nextRent = $contractId ? DB::table('rent_schedules')
+                ->where('lease_contract_id', $contractId)
+                ->whereDate('due_date', '>=', $contract->starts_at)
+                ->where('amount', '>', 0)
+                ->whereColumn('paid_amount', '<', 'amount')
+                ->orderBy('due_date')
+                ->first() : null;
+            if ($nextRent) {
+                $dueDate = Carbon::parse($nextRent->due_date)->startOfDay();
+                $nextRent->balance = max(0, (float) $nextRent->amount - (float) $nextRent->paid_amount);
+                $nextRent->status = (float) $nextRent->paid_amount > 0
+                    ? 'partial'
+                    : (today()->gt($dueDate) ? 'late' : (today()->isSameDay($dueDate) ? 'due' : 'upcoming'));
+            }
+            $lastPayment = DB::table('payments')
+                ->join('lease_contracts', 'lease_contracts.id', '=', 'payments.lease_contract_id')
+                ->where('lease_contracts.tenant_id', $u->id)
+                ->where('payments.status', 'confirmed')
+                ->select('payments.id', 'payments.reference', 'payments.amount', 'payments.method', 'payments.paid_at')
+                ->latest('payments.paid_at')
+                ->first();
             $data = [
                 'contract' => $contract,
+                'next_rent' => $nextRent,
+                'last_payment' => $lastPayment,
                 'rent_paid' => (float) DB::table('payments')->join('lease_contracts', 'lease_contracts.id', '=', 'payments.lease_contract_id')->where('lease_contracts.tenant_id', $u->id)->where('payments.status', 'confirmed')->sum('payments.amount'),
                 'pending_payments' => $contractId ? DB::table('payments')->where('lease_contract_id', $contractId)->where('status', 'pending')->count() : 0,
-                'receipts' => $contractId ? DB::table('receipts')->where('lease_contract_id', $contractId)->count() : 0,
+                'receipts' => $contractId ? DB::table('receipts')->join('payments', 'payments.id', '=', 'receipts.payment_id')->where('payments.lease_contract_id', $contractId)->count() : 0,
+                'documents' => $contractId ? DB::table('media')->where('mediable_type', 'App\\Models\\LeaseContract')->where('mediable_id', $contractId)->count() + DB::table('receipts')->join('payments', 'payments.id', '=', 'receipts.payment_id')->where('payments.lease_contract_id', $contractId)->count() : 0,
+                'payments' => $contractId ? DB::table('payments')->where('lease_contract_id', $contractId)->where('status', 'confirmed')->count() : 0,
                 'pending_inspections' => $contractId ? DB::table('inspections')->where('lease_contract_id', $contractId)->where('status', '!=', 'completed')->count() : 0,
                 'open_maintenance' => $unitId ? DB::table('maintenance_requests')->where('unit_id', $unitId)->whereNotIn('status', ['resolved', 'closed'])->count() : 0,
             ];
         } else {
-            $data = ['favorites' => DB::table('favorites')->where('user_id', $u->id)->count(), 'saved_searches' => DB::table('saved_searches')->where('user_id', $u->id)->count(), 'visits' => DB::table('visit_requests')->where('requester_id', $u->id)->count()];
+            $data = [
+                'favorites' => DB::table('favorites')->where('user_id', $u->id)->count(),
+                'saved_searches' => DB::table('saved_searches')->where('user_id', $u->id)->count(),
+                'visits' => DB::table('visit_requests')->where('requester_id', $u->id)->count(),
+                'applications' => DB::table('rental_applications')->where('applicant_id', $u->id)->count(),
+            ];
         }
 
         $data['unread_messages'] = DB::table('messages')

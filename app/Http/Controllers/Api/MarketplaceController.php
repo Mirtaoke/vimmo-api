@@ -79,9 +79,35 @@ class MarketplaceController extends Controller
         if ($r->filled('max_surface')) {
             $q->whereHas('unit', fn ($x) => $x->where('surface', '<=', $r->max_surface));
         }
-        foreach (['furnished', 'parking', 'water', 'electricity', 'air_conditioning', 'security', 'pool', 'terrace'] as $amenity) {
-            if ($r->boolean($amenity)) {
-                $q->whereHas('unit', fn ($x) => $x->whereJsonContains('amenities', $amenity));
+        $amenityAliases = [
+            'furnished' => ['furnished', 'meuble', 'meublé'],
+            'parking' => ['parking'],
+            'water' => ['water', 'eau'],
+            'electricity' => ['electricity', 'électricité', 'electricite'],
+            'air_conditioning' => ['air_conditioning', 'climatisation'],
+            'security' => ['security', 'sécurité', 'securite'],
+            'pool' => ['pool', 'piscine'],
+            'terrace' => ['terrace', 'terrasse'],
+        ];
+        foreach ($amenityAliases as $filter => $aliases) {
+            if ($r->boolean($filter)) {
+                $q->whereHas('unit', function ($unit) use ($aliases) {
+                    $unit->where(function ($amenities) use ($aliases) {
+                        foreach ($aliases as $index => $alias) {
+                            $method = $index === 0 ? 'whereJsonContains' : 'orWhereJsonContains';
+                            $amenities->{$method}('amenities', $alias);
+                        }
+                    });
+                });
+            }
+        }
+        if ($r->filled('availability')) {
+            $statuses = collect(explode(',', $r->string('availability')->toString()))
+                ->map(fn (string $status): string => trim($status))
+                ->filter(fn (string $status): bool => in_array($status, ['available', 'reserved', 'maintenance', 'inspection', 'inactive'], true))
+                ->values();
+            if ($statuses->isNotEmpty()) {
+                $q->whereHas('unit', fn ($unit) => $unit->whereIn('status', $statuses));
             }
         }
         if ($r->filled('available_from')) {
@@ -96,7 +122,9 @@ class MarketplaceController extends Controller
             $q->whereHas('unit.property', fn ($property) => $property->whereNotNull('latitude')->whereNotNull('longitude')->whereBetween('latitude', [$latitude - $latitudeDelta, $latitude + $latitudeDelta])->whereBetween('longitude', [$longitude - $longitudeDelta, $longitude + $longitudeDelta]));
         }
 
-        return ApiResponse::success($q->latest('published_at')->paginate(15));
+        $perPage = max(1, min(50, $r->integer('per_page', 15)));
+
+        return ApiResponse::success($q->latest('published_at')->paginate($perPage));
     }
 
     public function show(Listing $listing)
@@ -202,7 +230,24 @@ class MarketplaceController extends Controller
     {
         abort_unless($property->owner_id === $r->user()->id, 403);
         $d = $r->validate(
-            ['reference' => 'required|string', 'type' => 'required|string', 'description' => 'nullable|string', 'surface' => 'nullable|numeric', 'rooms' => 'integer|min:0', 'bedrooms' => 'integer|min:0', 'bathrooms' => 'integer|min:0', 'monthly_rent' => $property->is_private ? 'nullable|numeric|min:0' : 'required|numeric|min:1', 'amenities' => 'nullable|array'],
+            [
+                'reference' => 'required|string',
+                'type' => 'required|string',
+                'description' => 'nullable|string',
+                'surface' => 'nullable|numeric',
+                'rooms' => 'integer|min:0',
+                'bedrooms' => 'integer|min:0',
+                'bathrooms' => 'integer|min:0',
+                'monthly_rent' => $property->is_private ? 'nullable|numeric|min:0' : 'required|numeric|min:1',
+                'monthly_charges' => 'nullable|numeric|min:0',
+                'deposit_amount' => 'nullable|numeric|min:0',
+                'advance_months' => 'nullable|integer|min:0|max:24',
+                'charges_description' => 'nullable|string|max:1000',
+                'deposit_description' => 'nullable|string|max:1000',
+                'amenities' => 'nullable|array',
+                'amenity_details' => 'nullable|array',
+                'amenity_details.*' => 'nullable|string|max:1000',
+            ],
             $this->unitMessages(),
             $this->unitAttributes(),
         );
@@ -225,7 +270,14 @@ class MarketplaceController extends Controller
             'monthly_rent' => $unit->property->is_private
                 ? 'sometimes|nullable|numeric|min:0'
                 : 'sometimes|required|numeric|min:1',
+            'monthly_charges' => 'nullable|numeric|min:0',
+            'deposit_amount' => 'nullable|numeric|min:0',
+            'advance_months' => 'nullable|integer|min:0|max:24',
+            'charges_description' => 'nullable|string|max:1000',
+            'deposit_description' => 'nullable|string|max:1000',
             'amenities' => 'nullable|array',
+            'amenity_details' => 'nullable|array',
+            'amenity_details.*' => 'nullable|string|max:1000',
             'status' => 'sometimes|required|in:available,reserved,maintenance,inspection,inactive',
         ], $this->unitMessages(), $this->unitAttributes());
         if (isset($data['reference'])) {
@@ -309,7 +361,19 @@ class MarketplaceController extends Controller
 
     public function storeListing(Request $r, ListingAlertService $alerts)
     {
-        $d = $r->validate(['unit_id' => 'required|exists:units,id', 'title' => 'required|string|max:180', 'description' => 'required|string', 'price' => 'required|numeric|min:0', 'deposit' => 'nullable|numeric|min:0', 'charges' => 'nullable|numeric|min:0', 'available_from' => 'nullable|date', 'status' => 'nullable|in:draft,pending,published,reserved,rented,suspended,archived']);
+        $d = $r->validate([
+            'unit_id' => 'required|exists:units,id',
+            'title' => 'required|string|max:180',
+            'description' => 'required|string',
+            'price' => 'required|numeric|min:1',
+            'deposit' => 'nullable|numeric|min:0',
+            'charges' => 'nullable|numeric|min:0',
+            'advance_amount' => 'nullable|numeric|min:0',
+            'charges_description' => 'nullable|string|max:1000',
+            'deposit_description' => 'nullable|string|max:1000',
+            'available_from' => 'nullable|date',
+            'status' => 'nullable|in:draft,pending,published,reserved,rented,suspended,archived',
+        ]);
         $unit = Unit::with('property')->findOrFail($d['unit_id']);
         abort_unless($unit->property->owner_id === $r->user()->id, 403);
         abort_if($unit->property->is_private, 422, 'Un bien patrimonial privé ne peut pas être publié.');
@@ -325,7 +389,18 @@ class MarketplaceController extends Controller
     public function updateListing(Request $r, Listing $listing, ListingAlertService $alerts)
     {
         abort_unless($listing->owner_id === $r->user()->id, 403);
-        $d = $r->validate(['title' => 'sometimes|required|string|max:180', 'description' => 'sometimes|required|string', 'price' => 'sometimes|required|numeric|min:0', 'deposit' => 'nullable|numeric|min:0', 'charges' => 'nullable|numeric|min:0', 'available_from' => 'nullable|date', 'status' => 'sometimes|required|in:draft,pending,published,reserved,rented,suspended,archived']);
+        $d = $r->validate([
+            'title' => 'sometimes|required|string|max:180',
+            'description' => 'sometimes|required|string',
+            'price' => 'sometimes|required|numeric|min:1',
+            'deposit' => 'nullable|numeric|min:0',
+            'charges' => 'nullable|numeric|min:0',
+            'advance_amount' => 'nullable|numeric|min:0',
+            'charges_description' => 'nullable|string|max:1000',
+            'deposit_description' => 'nullable|string|max:1000',
+            'available_from' => 'nullable|date',
+            'status' => 'sometimes|required|in:draft,pending,published,reserved,rented,suspended,archived',
+        ]);
         $becomesPublished = ($d['status'] ?? null) === 'published' && $listing->status !== 'published';
         if ($becomesPublished && ! $listing->published_at) {
             $d['published_at'] = now();
@@ -361,7 +436,10 @@ class MarketplaceController extends Controller
 
     public function favorites(Request $r)
     {
-        return ApiResponse::success(Listing::with('unit.property')->whereIn('id', DB::table('favorites')->where('user_id', $r->user()->id)->pluck('listing_id'))->get());
+        return ApiResponse::success(Listing::with(['unit.media', 'unit.property.media', 'media', 'owner:id,name,phone'])
+            ->whereIn('id', DB::table('favorites')->where('user_id', $r->user()->id)->pluck('listing_id'))
+            ->latest('published_at')
+            ->get());
     }
 
     public function savedSearches(Request $r)
@@ -385,6 +463,24 @@ class MarketplaceController extends Controller
         return ApiResponse::success(null, 'Recherche supprimée.');
     }
 
+    public function updateSearch(Request $r, int $search)
+    {
+        $data = $r->validate([
+            'name' => 'sometimes|required|string|max:180',
+            'alerts_enabled' => 'sometimes|required|boolean',
+        ]);
+        abort_if($data === [], 422, 'Aucune modification à enregistrer.');
+        $query = DB::table('saved_searches')
+            ->where(['id' => $search, 'user_id' => $r->user()->id]);
+        abort_unless($query->exists(), 404, 'Recherche sauvegardée introuvable.');
+        $query->update([...$data, 'updated_at' => now()]);
+
+        return ApiResponse::success(
+            DB::table('saved_searches')->find($search),
+            'Recherche mise à jour.',
+        );
+    }
+
     public function visit(Request $r, Listing $listing)
     {
         abort_unless($listing->status === 'published', 422, 'Cette annonce n’accepte pas de visite.');
@@ -397,14 +493,22 @@ class MarketplaceController extends Controller
 
     public function visits(Request $r)
     {
-        $q = DB::table('visit_requests')->join('listings', 'listings.id', '=', 'visit_requests.listing_id');
+        $q = DB::table('visit_requests')
+            ->join('listings', 'listings.id', '=', 'visit_requests.listing_id')
+            ->leftJoin('users as requesters', 'requesters.id', '=', 'visit_requests.requester_id');
         if ($r->user()->role === 'owner') {
             $q->where('listings.owner_id', $r->user()->id);
         } else {
             $q->where('visit_requests.requester_id', $r->user()->id);
         }
 
-        return ApiResponse::success($q->select('visit_requests.*', 'listings.title')->latest('visit_requests.created_at')->get());
+        return ApiResponse::success($q->select(
+            'visit_requests.*',
+            'listings.title',
+            'requesters.name as requester_name',
+            'requesters.email as requester_email',
+            'requesters.phone as requester_phone',
+        )->latest('visit_requests.created_at')->get());
     }
 
     public function visitStatus(Request $r, int $visit)
@@ -457,7 +561,13 @@ class MarketplaceController extends Controller
             'bedrooms' => 'nombre de chambres',
             'bathrooms' => 'nombre de salles de bain',
             'monthly_rent' => 'loyer mensuel',
+            'monthly_charges' => 'charges mensuelles',
+            'deposit_amount' => 'caution',
+            'advance_months' => 'nombre de mois prépayés',
+            'charges_description' => 'détail des charges',
+            'deposit_description' => 'détail de la caution',
             'amenities' => 'équipements',
+            'amenity_details' => 'détails des équipements',
             'status' => 'statut du logement',
         ];
     }
