@@ -44,14 +44,14 @@ class RentalController extends Controller
         $normalizedPhone = $this->normalizePhone((string) $r->input('phone'));
         $duplicateErrors = [];
         if (User::whereRaw('LOWER(email) = ?', [(string) $r->input('email')])->exists()) {
-            $duplicateErrors['email'] = ['Cette adresse e-mail appartient déjà à un utilisateur.'];
+            $duplicateErrors['email'] = ['E-mail déjà utilisé.'];
         }
         $phoneAlreadyUsed = User::query()
             ->whereNotNull('phone')
             ->get(['id', 'phone'])
             ->contains(fn (User $user) => $this->normalizePhone((string) $user->phone) === $normalizedPhone);
         if ($phoneAlreadyUsed) {
-            $duplicateErrors['phone'] = ['Ce numéro de téléphone appartient déjà à un utilisateur.'];
+            $duplicateErrors['phone'] = ['Téléphone déjà utilisé.'];
         }
         if ($duplicateErrors !== []) {
             throw ValidationException::withMessages($duplicateErrors);
@@ -63,13 +63,12 @@ class RentalController extends Controller
             'phone' => 'required|string|max:30|unique:users,phone',
             'starts_at' => 'required|date',
             'ends_at' => 'nullable|date|after:starts_at',
-            'rent_amount' => 'required|numeric|min:1',
             'deposit_amount' => 'nullable|numeric|min:0',
             'charges_amount' => 'nullable|numeric|min:0',
             'due_day' => 'required|integer|between:1,28',
         ], [
-            'email.unique' => 'Cette adresse e-mail appartient déjà à un utilisateur.',
-            'phone.unique' => 'Ce numéro de téléphone appartient déjà à un utilisateur.',
+            'email.unique' => 'E-mail déjà utilisé.',
+            'phone.unique' => 'Téléphone déjà utilisé.',
             'due_day.between' => 'Le jour d’échéance doit être compris entre 1 et 28.',
         ], [
             'first_name' => 'prénom',
@@ -77,11 +76,17 @@ class RentalController extends Controller
             'email' => 'adresse e-mail',
             'phone' => 'numéro de téléphone',
             'starts_at' => 'date de début',
-            'rent_amount' => 'loyer mensuel',
             'due_day' => 'jour d’échéance mensuelle',
         ]);
 
-        return DB::transaction(function () use ($d, $r, $unit) {
+        $rentAmount = (float) $unit->monthly_rent;
+        if ($rentAmount <= 0) {
+            throw ValidationException::withMessages([
+                'unit' => ['Définissez d’abord le loyer du logement.'],
+            ]);
+        }
+
+        return DB::transaction(function () use ($d, $r, $unit, $rentAmount) {
             $tenantFields = collect($d)->only(['first_name', 'last_name', 'email', 'phone'])->all();
             $tenant = User::create([...$tenantFields, 'name' => $d['first_name'].' '.$d['last_name'], 'role' => 'tenant', 'password' => Hash::make('password'), 'email_verified_at' => now(), 'phone_verified_at' => now()]);
             $contract = LeaseContract::create([
@@ -91,7 +96,7 @@ class RentalController extends Controller
                 'reference' => 'CTR-'.now()->format('Y').'-'.strtoupper(Str::random(6)),
                 'starts_at' => $d['starts_at'],
                 'ends_at' => $d['ends_at'] ?? null,
-                'rent_amount' => $d['rent_amount'],
+                'rent_amount' => $rentAmount,
                 'deposit_amount' => $d['deposit_amount'] ?? 0,
                 'charges_amount' => $d['charges_amount'] ?? 0,
                 'due_day' => $d['due_day'],
@@ -100,7 +105,7 @@ class RentalController extends Controller
             $start = Carbon::parse($d['starts_at'])->startOfMonth();
             $end = isset($d['ends_at']) ? Carbon::parse($d['ends_at'])->startOfMonth() : $start->copy()->addMonths(11);
             while ($start->lte($end)) {
-                RentSchedule::create(['lease_contract_id' => $contract->id, 'period_start' => $start->copy()->startOfMonth(), 'period_end' => $start->copy()->endOfMonth(), 'due_date' => $start->copy()->day((int) $d['due_day']), 'amount' => $d['rent_amount'], 'status' => $start->isFuture() ? 'upcoming' : 'due']);
+                RentSchedule::create(['lease_contract_id' => $contract->id, 'period_start' => $start->copy()->startOfMonth(), 'period_end' => $start->copy()->endOfMonth(), 'due_date' => $start->copy()->day((int) $d['due_day']), 'amount' => $rentAmount, 'status' => $start->isFuture() ? 'upcoming' : 'due']);
                 $start->addMonth();
             }
             $unit->update(['status' => 'occupied']);

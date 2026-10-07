@@ -143,28 +143,28 @@ class BusinessFlowsApiTest extends TestCase
             ...$payload,
             'email' => '  '.strtoupper($existing->email).'  ',
         ])->assertUnprocessable()
-            ->assertJsonPath('errors.email.0', 'Cette adresse e-mail appartient déjà à un utilisateur.');
+            ->assertJsonPath('errors.email.0', 'E-mail déjà utilisé.');
 
         $formattedPhone = implode(' ', str_split((string) $existing->phone, 2));
         $this->actingAs($owner)->postJson('/api/units/'.$unit->id.'/tenant', [
             ...$payload,
             'phone' => $formattedPhone,
         ])->assertUnprocessable()
-            ->assertJsonPath('errors.phone.0', 'Ce numéro de téléphone appartient déjà à un utilisateur.');
+            ->assertJsonPath('errors.phone.0', 'Téléphone déjà utilisé.');
 
         $this->actingAs($owner)->postJson('/api/units/'.$unit->id.'/tenant', [
             ...$payload,
             'phone' => '+229 01 '.$formattedPhone,
         ])->assertUnprocessable()
-            ->assertJsonPath('errors.phone.0', 'Ce numéro de téléphone appartient déjà à un utilisateur.');
+            ->assertJsonPath('errors.phone.0', 'Téléphone déjà utilisé.');
 
         $this->actingAs($owner)->postJson('/api/units/'.$unit->id.'/tenant', [
             ...$payload,
             'email' => strtoupper($existing->email),
             'phone' => '+229 01 '.$formattedPhone,
         ])->assertUnprocessable()
-            ->assertJsonPath('errors.email.0', 'Cette adresse e-mail appartient déjà à un utilisateur.')
-            ->assertJsonPath('errors.phone.0', 'Ce numéro de téléphone appartient déjà à un utilisateur.');
+            ->assertJsonPath('errors.email.0', 'E-mail déjà utilisé.')
+            ->assertJsonPath('errors.phone.0', 'Téléphone déjà utilisé.');
 
         $this->assertDatabaseMissing('users', ['email' => 'nouvelle@vimmo.bj']);
     }
