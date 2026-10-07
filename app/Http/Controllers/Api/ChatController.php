@@ -22,7 +22,14 @@ class ChatController extends Controller
 
     public function index(Request $r)
     {
-        return ApiResponse::success(Conversation::with(['unit.media', 'unit.property.media', 'participants:id,name,phone,avatar_path', 'messages' => fn ($q) => $q->latest()->limit(1)])->whereHas('participants', fn ($q) => $q->where('users.id', $r->user()->id))->latest('updated_at')->get());
+        return ApiResponse::success(Conversation::with([
+            'unit.media',
+            'unit.property.media',
+            'participants:id,name,phone,avatar_path',
+            'latestMessage.sender:id,name',
+        ])->whereHas('participants', fn ($q) => $q->where('users.id', $r->user()->id))
+            ->latest('updated_at')
+            ->get());
     }
 
     public function store(Request $r)

@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Models\Inspection;
 use App\Models\LeaseContract;
+use App\Models\Listing;
 use App\Models\MaintenanceRequest;
 use App\Models\Payment;
 use App\Models\Receipt;
@@ -121,6 +122,9 @@ class RentalController extends Controller
                 $start->addMonth();
             }
             $lockedUnit->update(['status' => 'occupied']);
+            Listing::where('unit_id', $lockedUnit->id)
+                ->whereIn('status', ['pending', 'published', 'reserved'])
+                ->update(['status' => 'rented']);
 
             return ApiResponse::success(['tenant' => $tenant, 'contract' => $contract->load('schedules'), 'default_password' => 'password', 'unit_id' => $unit->id], 'Compte locataire créé et lié au logement.', 201);
         });
@@ -168,7 +172,11 @@ class RentalController extends Controller
                 $status = $dueDate->lt(today()) ? 'late' : ($dueDate->isToday() ? 'due' : 'upcoming');
                 RentSchedule::create(['lease_contract_id' => $contract->id, 'period_start' => $start->copy()->startOfMonth(), 'period_end' => $start->copy()->endOfMonth(), 'due_date' => $dueDate, 'amount' => $d['rent_amount'], 'status' => $status]);
                 $start->addMonth();
-            }$lockedUnit->update(['status' => 'occupied']);
+            }
+            $lockedUnit->update(['status' => 'occupied']);
+            Listing::where('unit_id', $lockedUnit->id)
+                ->whereIn('status', ['pending', 'published', 'reserved'])
+                ->update(['status' => 'rented']);
 
             return ApiResponse::success($contract->load('schedules'), 'Contrat et échéances créés.', 201);
         });
@@ -201,7 +209,13 @@ class RentalController extends Controller
 
     public function payments(Request $r)
     {
-        $q = Payment::with(['contract.unit.property', 'schedules', 'receipt'])->whereHas('contract', fn ($x) => $x->where($r->user()->role === 'owner' ? 'owner_id' : 'tenant_id', $r->user()->id));
+        $q = Payment::with([
+            'contract.unit.property',
+            'contract.owner:id,name',
+            'contract.tenant:id,name,email,phone',
+            'schedules',
+            'receipt',
+        ])->whereHas('contract', fn ($x) => $x->where($r->user()->role === 'owner' ? 'owner_id' : 'tenant_id', $r->user()->id));
 
         return ApiResponse::success($q->latest()->get());
     }
@@ -254,6 +268,20 @@ class RentalController extends Controller
         return Storage::disk('private')->download($payment->proof_path);
     }
 
+    public function downloadProofChunk(Request $request, Payment $payment)
+    {
+        $contract = $payment->contract;
+        abort_unless(in_array($request->user()->id, [$contract->owner_id, $contract->tenant_id], true), 403);
+        abort_unless($payment->proof_path && Storage::disk('private')->exists($payment->proof_path), 404, 'Aucun justificatif disponible.');
+
+        return $this->fileChunk(
+            request: $request,
+            bytes: Storage::disk('private')->get($payment->proof_path),
+            name: 'justificatif-'.$payment->reference.'.'.pathinfo($payment->proof_path, PATHINFO_EXTENSION),
+            mimeType: Storage::disk('private')->mimeType($payment->proof_path) ?: 'application/octet-stream',
+        );
+    }
+
     public function confirm(Request $r, Payment $payment, PaymentService $service)
     {
         abort_unless($payment->contract()->where('owner_id', $r->user()->id)->exists(), 403);
@@ -283,10 +311,10 @@ class RentalController extends Controller
             ->where($r->user()->role === 'owner' ? 'lease_contracts.owner_id' : 'lease_contracts.tenant_id', $r->user()->id)
             ->select('receipts.*', 'payments.amount', 'payments.paid_at', 'lease_contracts.reference as contract_reference', 'units.reference as unit_reference', 'properties.name as property_name', 'tenants.name as tenant_name')
             ->latest('receipts.generated_at')->get()->map(function ($receipt) {
-            $receipt->download_path = '/receipts/'.$receipt->id.'/download';
+                $receipt->download_path = '/receipts/'.$receipt->id.'/download';
 
-            return $receipt;
-        });
+                return $receipt;
+            });
 
         return ApiResponse::success($rows);
     }
@@ -296,10 +324,26 @@ class RentalController extends Controller
         $receipt->load(['payment.contract.owner', 'payment.contract.tenant', 'payment.contract.unit.property', 'payment.schedules']);
         $contract = $receipt->payment->contract;
         abort_unless(in_array($r->user()->id, [$contract->owner_id, $contract->tenant_id], true), 403);
-        $periods = $receipt->payment->schedules->map(fn ($s) => Carbon::parse($s->period_start)->locale('fr')->translatedFormat('F Y'))->join(', ');
-        $html = view('pdf.receipt', ['receipt' => $receipt, 'payment' => $receipt->payment, 'contract' => $contract, 'periods' => $periods])->render();
 
-        return Pdf::loadHTML($html)->setPaper('a4')->download('quittance-'.$receipt->reference.'.pdf');
+        return response($this->receiptPdf($receipt), 200, [
+            'Content-Type' => 'application/pdf',
+            'Content-Disposition' => 'attachment; filename="quittance-'.$receipt->reference.'.pdf"',
+            'Cache-Control' => 'private, no-store, max-age=0',
+        ]);
+    }
+
+    public function downloadReceiptChunk(Request $request, Receipt $receipt)
+    {
+        $receipt->load(['payment.contract.owner', 'payment.contract.tenant', 'payment.contract.unit.property', 'payment.schedules']);
+        $contract = $receipt->payment->contract;
+        abort_unless(in_array($request->user()->id, [$contract->owner_id, $contract->tenant_id], true), 403);
+
+        return $this->fileChunk(
+            request: $request,
+            bytes: $this->receiptPdf($receipt),
+            name: 'quittance-'.$receipt->reference.'.pdf',
+            mimeType: 'application/pdf',
+        );
     }
 
     public function verifyReceipt(string $token)
@@ -340,5 +384,37 @@ class RentalController extends Controller
 
             return $payment->load('schedules');
         });
+    }
+
+    private function receiptPdf(Receipt $receipt): string
+    {
+        $periods = $receipt->payment->schedules
+            ->map(fn ($schedule) => Carbon::parse($schedule->period_start)->locale('fr')->translatedFormat('F Y'))
+            ->join(', ');
+        $html = view('pdf.receipt', [
+            'receipt' => $receipt,
+            'payment' => $receipt->payment,
+            'contract' => $receipt->payment->contract,
+            'periods' => $periods,
+        ])->render();
+
+        return Pdf::loadHTML($html)->setPaper('a4')->output();
+    }
+
+    private function fileChunk(Request $request, string $bytes, string $name, string $mimeType)
+    {
+        $offset = max(0, $request->integer('offset'));
+        $chunk = substr($bytes, $offset, 256 * 1024);
+        $nextOffset = $offset + strlen($chunk);
+
+        return ApiResponse::success([
+            'content' => base64_encode($chunk),
+            'offset' => $offset,
+            'next_offset' => $nextOffset,
+            'total' => strlen($bytes),
+            'done' => $nextOffset >= strlen($bytes),
+            'name' => $name,
+            'mime_type' => $mimeType,
+        ]);
     }
 }

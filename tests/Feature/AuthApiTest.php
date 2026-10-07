@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Models\Listing;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
@@ -40,7 +41,10 @@ class AuthApiTest extends TestCase
     public function test_public_can_list_published_listings(): void
     {
         $this->seed();
-        $this->getJson('/api/listings')->assertOk()->assertJsonPath('success', true)->assertJsonCount(12, 'data.data');
+        $expected = Listing::where('status', 'published')
+            ->whereHas('unit', fn ($query) => $query->where('status', 'available'))
+            ->count();
+        $this->getJson('/api/listings')->assertOk()->assertJsonPath('success', true)->assertJsonCount($expected, 'data.data');
     }
 
     public function test_registered_user_can_verify_the_random_otp(): void

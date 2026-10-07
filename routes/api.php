@@ -28,6 +28,8 @@ Route::get('/events/{event}/cover', [EventController::class, 'cover'])
     ->middleware('signed:relative')
     ->name('events.cover');
 Route::get('/events/{event}', [EventController::class, 'show']);
+Route::post('/event-payments/webhook', [EventController::class, 'paymentWebhook'])
+    ->middleware('throttle:60,1');
 Route::get('/receipts/verify/{token}', [RentalController::class, 'verifyReceipt']);
 Route::prefix('auth')->middleware('throttle:10,1')->group(function () {
     Route::post('/register', [AuthController::class, 'register']);
@@ -83,6 +85,7 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::post('/payments/{payment}/confirm', [RentalController::class, 'confirm']);
         Route::post('/payments/{payment}/reject', [RentalController::class, 'reject']);
         Route::patch('/maintenance/{maintenance}/status', [MaintenanceController::class, 'status']);
+        Route::post('/maintenance/{maintenance}/reject', [MaintenanceController::class, 'reject']);
         Route::get('/patrimony', [PatrimonyController::class, 'index']);
         Route::post('/patrimony', [PatrimonyController::class, 'store']);
         Route::get('/patrimony/shares', [PatrimonyController::class, 'shares']);
@@ -102,8 +105,10 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('/payments', [RentalController::class, 'pay'])->middleware('role:tenant');
     Route::post('/payments/record', [RentalController::class, 'recordPayment'])->middleware('role:owner');
     Route::get('/payments/{payment}/proof', [RentalController::class, 'downloadProof']);
+    Route::get('/payments/{payment}/proof/chunks', [RentalController::class, 'downloadProofChunk']);
     Route::get('/receipts', [RentalController::class, 'receipts']);
     Route::get('/receipts/{receipt}/download', [RentalController::class, 'downloadReceipt']);
+    Route::get('/receipts/{receipt}/chunks', [RentalController::class, 'downloadReceiptChunk']);
     Route::get('/documents', [DocumentController::class, 'index']);
     Route::post('/documents', [DocumentController::class, 'store'])->middleware('role:owner');
     Route::get('/documents/{media}/download', [DocumentController::class, 'download']);
@@ -137,6 +142,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/organizer/sales', [EventController::class, 'sales'])->middleware('role:organizer');
     Route::post('/organizer/events', [EventController::class, 'store'])->middleware('role:organizer');
     Route::match(['put', 'post'], '/organizer/events/{event}', [EventController::class, 'update'])->middleware('role:organizer');
+    Route::patch('/organizer/events/{event}/status', [EventController::class, 'status'])->middleware('role:organizer');
     Route::delete('/organizer/events/{event}', [EventController::class, 'archive'])->middleware('role:organizer');
     Route::post('/organizer/tickets/scan', [EventController::class, 'scan'])->middleware('role:organizer');
     Route::post('/events/{event}/orders', [EventController::class, 'order']);
@@ -145,5 +151,6 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/notifications', [NotificationController::class, 'index']);
     Route::put('/notifications/read-all', [NotificationController::class, 'readAll']);
     Route::put('/notifications/{id}/read', [NotificationController::class, 'read']);
+    Route::delete('/notifications/{id}', [NotificationController::class, 'destroy']);
 });
 Route::post('/properties/{property}/media', [MarketplaceController::class, 'storePropertyMedia'])->middleware(['auth:sanctum', 'role:owner']);

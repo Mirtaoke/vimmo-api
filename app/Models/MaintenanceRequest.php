@@ -10,7 +10,10 @@ class MaintenanceRequest extends Model
 
     protected function casts(): array
     {
-        return ['scheduled_at' => 'datetime'];
+        return [
+            'scheduled_at' => 'datetime',
+            'rejected_at' => 'datetime',
+        ];
     }
 
     public function unit()

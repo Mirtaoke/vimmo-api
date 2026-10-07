@@ -28,4 +28,14 @@ class NotificationController extends Controller
 
         return ApiResponse::success(null, 'Toutes les notifications sont lues.');
     }
+
+    public function destroy(Request $r, int $id)
+    {
+        $deleted = DB::table('notifications')
+            ->where(['id' => $id, 'user_id' => $r->user()->id])
+            ->delete();
+        abort_unless($deleted, 404, 'Notification introuvable.');
+
+        return ApiResponse::success(null, 'Notification supprimée.');
+    }
 }

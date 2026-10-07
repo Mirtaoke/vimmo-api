@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Models\Conversation;
 use App\Models\Event;
 use App\Models\Inspection;
 use App\Models\LeaseContract;
@@ -53,10 +54,59 @@ class ExtendedFlowsApiTest extends TestCase
     {
         $this->seed();
         $seeker = User::where('email', 'ruth.chercheur@vimmo.bj')->firstOrFail();
-        $listing = Listing::firstOrFail();
+        $listing = Listing::where('status', 'published')
+            ->whereHas('unit', fn ($query) => $query->where('status', 'available'))
+            ->firstOrFail();
         $application = $this->actingAs($seeker)->postJson('/api/listings/'.$listing->id.'/applications', ['message' => 'Dossier complet'])->assertCreated()->json('data');
         $owner = User::findOrFail($listing->owner_id);
         $this->actingAs($owner)->patchJson('/api/rental-applications/'.$application['id'].'/status', ['status' => 'accepted'])->assertOk()->assertJsonPath('data.status', 'accepted');
+    }
+
+    public function test_owner_can_confirm_a_visit_with_a_new_schedule_and_message(): void
+    {
+        $this->seed();
+        $seeker = User::where('role', 'seeker')->firstOrFail();
+        $listing = Listing::where('status', 'published')
+            ->whereHas('unit', fn ($query) => $query->where('status', 'available'))
+            ->firstOrFail();
+        $visit = $this->actingAs($seeker)->postJson('/api/listings/'.$listing->id.'/visits', [
+            'requested_at' => now()->addDays(2)->toIso8601String(),
+            'comment' => 'Disponible en matinée.',
+        ])->assertCreated()->json('data');
+        $owner = User::findOrFail($listing->owner_id);
+        $proposedAt = now()->addDays(3)->setTime(15, 30)->toIso8601String();
+
+        $this->actingAs($owner)->patchJson('/api/visits/'.$visit['id'].'/status', [
+            'status' => 'confirmed',
+            'owner_note' => 'Merci de vous présenter dix minutes avant.',
+            'proposed_at' => $proposedAt,
+        ])->assertOk()
+            ->assertJsonPath('data.status', 'confirmed')
+            ->assertJsonPath('data.owner_note', 'Merci de vous présenter dix minutes avant.');
+
+        $this->assertDatabaseHas('visit_requests', [
+            'id' => $visit['id'],
+            'status' => 'confirmed',
+            'owner_note' => 'Merci de vous présenter dix minutes avant.',
+        ]);
+    }
+
+    public function test_rejecting_a_request_requires_a_reason(): void
+    {
+        $this->seed();
+        $seeker = User::where('role', 'seeker')->firstOrFail();
+        $listing = Listing::where('status', 'published')
+            ->whereHas('unit', fn ($query) => $query->where('status', 'available'))
+            ->firstOrFail();
+        $application = $this->actingAs($seeker)->postJson('/api/listings/'.$listing->id.'/applications', [
+            'message' => 'Mon dossier est disponible.',
+        ])->assertCreated()->json('data');
+        $owner = User::findOrFail($listing->owner_id);
+
+        $this->actingAs($owner)->patchJson('/api/rental-applications/'.$application['id'].'/status', [
+            'status' => 'rejected',
+        ])->assertUnprocessable()
+            ->assertJsonValidationErrors('owner_note');
     }
 
     public function test_maintenance_is_limited_to_linked_tenant_and_accepts_comments(): void
@@ -67,6 +117,50 @@ class ExtendedFlowsApiTest extends TestCase
         $this->actingAs($tenant)->postJson('/api/maintenance/'.$maintenance->id.'/comments', ['comment' => 'Nouvelle précision'])->assertCreated();
         $other = User::where('role', 'tenant')->whereKeyNot($tenant->id)->firstOrFail();
         $this->actingAs($other)->getJson('/api/maintenance/'.$maintenance->id)->assertForbidden();
+    }
+
+    public function test_owner_can_reject_a_maintenance_request_with_a_reason(): void
+    {
+        $this->seed();
+        $maintenance = MaintenanceRequest::with('unit.property')->firstOrFail();
+        $owner = User::findOrFail($maintenance->unit->property->owner_id);
+
+        $this->actingAs($owner)->postJson('/api/maintenance/'.$maintenance->id.'/reject', [
+            'reason' => 'Le problème ne relève pas du logement.',
+        ])->assertOk()
+            ->assertJsonPath('data.status', 'closed')
+            ->assertJsonPath('data.rejection_reason', 'Le problème ne relève pas du logement.');
+
+        $this->assertDatabaseHas('maintenance_requests', [
+            'id' => $maintenance->id,
+            'rejection_reason' => 'Le problème ne relève pas du logement.',
+        ]);
+        $this->assertDatabaseHas('notifications', [
+            'user_id' => $maintenance->reported_by,
+            'type' => 'maintenance_rejected',
+        ]);
+
+        $otherOwner = User::factory()->create(['role' => 'owner']);
+        $this->actingAs($otherOwner)->postJson('/api/maintenance/'.$maintenance->id.'/reject', [
+            'reason' => 'Tentative interdite.',
+        ])->assertForbidden();
+    }
+
+    public function test_conversation_list_returns_the_actual_latest_message(): void
+    {
+        $this->seed();
+        $conversation = Conversation::with('participants')->firstOrFail();
+        $participant = $conversation->participants->firstOrFail();
+        $conversation->messages()->create([
+            'sender_id' => $participant->id,
+            'body' => 'Réponse la plus récente du propriétaire',
+            'type' => 'text',
+        ]);
+        $conversation->touch();
+
+        $this->actingAs($participant)->getJson('/api/conversations')
+            ->assertOk()
+            ->assertJsonPath('data.0.latest_message.body', 'Réponse la plus récente du propriétaire');
     }
 
     public function test_tenant_can_edit_or_delete_only_a_pending_maintenance_request(): void
@@ -130,7 +224,9 @@ class ExtendedFlowsApiTest extends TestCase
     {
         $this->seed();
         $seeker = User::where('role', 'seeker')->firstOrFail();
-        $listing = Listing::firstOrFail();
+        $listing = Listing::where('status', 'published')
+            ->whereHas('unit', fn ($query) => $query->where('status', 'available'))
+            ->firstOrFail();
         $this->actingAs($seeker)->postJson('/api/listings/'.$listing->id.'/favorite')->assertOk();
         $this->assertDatabaseHas('audit_logs', ['user_id' => $seeker->id, 'action' => 'POST api/listings/{listing}/favorite']);
     }
@@ -159,7 +255,12 @@ class ExtendedFlowsApiTest extends TestCase
     {
         $this->seed();
         $seeker = User::where('role', 'seeker')->firstOrFail();
-        $listing = Listing::with('unit')->whereHas('unit', fn ($query) => $query->whereJsonContains('amenities', 'climatisation'))->firstOrFail();
+        $listing = Listing::with('unit')
+            ->where('status', 'published')
+            ->whereHas('unit', fn ($query) => $query
+                ->where('status', 'available')
+                ->whereJsonContains('amenities', 'climatisation'))
+            ->firstOrFail();
 
         $this->getJson('/api/listings?air_conditioning=1&availability='.$listing->unit->status)
             ->assertOk()

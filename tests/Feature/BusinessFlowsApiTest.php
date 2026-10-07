@@ -313,4 +313,35 @@ class BusinessFlowsApiTest extends TestCase
         $response->assertOk()->assertHeader('content-type', 'application/pdf');
         $this->assertStringStartsWith('%PDF-', $response->getContent());
     }
+
+    public function test_linked_users_can_download_payment_proof_and_receipt_in_chunks(): void
+    {
+        $this->seed();
+        Storage::fake('private');
+        $payment = Payment::with(['contract.tenant', 'receipt'])->whereHas('receipt')->firstOrFail();
+        Storage::disk('private')->put('payment-proofs/test.pdf', '%PDF-proof-vimmo');
+        $payment->update(['proof_path' => 'payment-proofs/test.pdf']);
+
+        $proofContent = $this->actingAs($payment->contract->tenant)
+            ->getJson('/api/payments/'.$payment->id.'/proof/chunks?offset=0')
+            ->assertOk()
+            ->assertJsonPath('data.done', true)
+            ->json('data.content');
+        $this->assertSame('%PDF-proof-vimmo', base64_decode($proofContent));
+
+        $receiptContent = $this->actingAs($payment->contract->tenant)
+            ->getJson('/api/receipts/'.$payment->receipt->id.'/chunks?offset=0')
+            ->assertOk()
+            ->assertJsonStructure(['data' => ['content', 'next_offset', 'total', 'done']])
+            ->json('data.content');
+        $this->assertStringStartsWith('%PDF-', base64_decode($receiptContent));
+
+        $otherTenant = User::factory()->create(['role' => 'tenant']);
+        $this->actingAs($otherTenant)
+            ->getJson('/api/payments/'.$payment->id.'/proof/chunks?offset=0')
+            ->assertForbidden();
+        $this->actingAs($otherTenant)
+            ->getJson('/api/receipts/'.$payment->receipt->id.'/chunks?offset=0')
+            ->assertForbidden();
+    }
 }

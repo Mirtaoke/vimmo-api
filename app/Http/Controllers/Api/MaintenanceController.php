@@ -26,11 +26,12 @@ class MaintenanceController extends Controller
             $q->where('reported_by', $r->user()->id);
         } else {
             $q->whereHas('unit.property', fn ($x) => $x->where('owner_id', $r->user()->id));
-        }if ($r->filled('status')) {
+        }
+        if ($r->filled('status')) {
             $q->where('status', $r->status);
         }
 
-return ApiResponse::success($q->latest()->get());
+        return ApiResponse::success($q->latest()->get());
     }
 
     public function show(Request $r, MaintenanceRequest $maintenance)
@@ -59,10 +60,44 @@ return ApiResponse::success($q->latest()->get());
     {
         abort_unless($maintenance->unit->property->owner_id === $r->user()->id, 403);
         $d = $r->validate(['status' => 'required|in:received,processing,scheduled,resolved,closed', 'scheduled_at' => 'nullable|required_if:status,scheduled|date|after:now']);
-        $maintenance->update($d);
+        $maintenance->update([
+            ...$d,
+            'rejection_reason' => null,
+            'rejected_at' => null,
+        ]);
         $this->notify($maintenance->reported_by, 'maintenance', 'Intervention mise à jour', 'Votre réclamation « '.$maintenance->title.' » est maintenant : '.$d['status'], ['maintenance_id' => $maintenance->id]);
 
         return ApiResponse::success($maintenance->fresh(['comments', 'media']), 'Intervention mise à jour.');
+    }
+
+    public function reject(Request $request, MaintenanceRequest $maintenance)
+    {
+        abort_unless($maintenance->unit->property->owner_id === $request->user()->id, 403);
+        abort_if(in_array($maintenance->status, ['resolved', 'closed'], true), 422, 'Cette réclamation est déjà terminée.');
+        $data = $request->validate([
+            'reason' => ['required', 'string', 'max:1500'],
+        ], [
+            'reason.required' => 'Précisez le motif du rejet.',
+        ]);
+
+        $maintenance->update([
+            'status' => 'closed',
+            'scheduled_at' => null,
+            'rejection_reason' => $data['reason'],
+            'rejected_at' => now(),
+        ]);
+        $this->notify(
+            $maintenance->reported_by,
+            'maintenance_rejected',
+            'Réclamation rejetée',
+            'Votre réclamation « '.$maintenance->title.' » a été rejetée : '.$data['reason'],
+            ['maintenance_id' => $maintenance->id],
+        );
+
+        return ApiResponse::success(
+            $maintenance->fresh(['unit.property', 'reporter:id,name,email,phone', 'comments.user:id,name', 'media']),
+            'Réclamation rejetée.',
+        );
     }
 
     public function tenantStatus(Request $r, MaintenanceRequest $maintenance)

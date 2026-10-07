@@ -35,4 +35,8 @@ return [
         ],
     ],
 
+    'vimmo_event_payments' => [
+        'webhook_secret' => env('EVENT_PAYMENT_WEBHOOK_SECRET'),
+    ],
+
 ];

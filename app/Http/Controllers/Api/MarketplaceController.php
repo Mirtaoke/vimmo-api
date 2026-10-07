@@ -37,7 +37,9 @@ class MarketplaceController extends Controller
 
     public function listings(Request $r)
     {
-        $q = Listing::with(['unit.media', 'unit.property.media', 'media', 'owner:id,name,phone'])->where('status', 'published');
+        $q = Listing::with(['unit.media', 'unit.property.media', 'media', 'owner:id,name,phone'])
+            ->where('status', 'published')
+            ->whereHas('unit', fn ($unit) => $unit->where('status', 'available'));
         if ($r->filled('type')) {
             $types = collect(explode(',', $r->type))->map(fn ($type) => strtolower(trim($type)))->filter()->values();
             $q->whereHas('unit', fn ($unit) => $unit->whereIn(DB::raw('LOWER(type)'), $types));
@@ -130,6 +132,7 @@ class MarketplaceController extends Controller
     public function show(Listing $listing)
     {
         abort_unless($listing->status === 'published', 404);
+        abort_unless($listing->unit()->where('status', 'available')->exists(), 404, 'Ce logement n’est plus disponible.');
 
         return ApiResponse::success($listing->load(['unit.media', 'unit.property.media', 'owner:id,name,phone', 'media']));
     }
@@ -163,7 +166,7 @@ class MarketplaceController extends Controller
 
     public function ownerListings(Request $r)
     {
-        return ApiResponse::success(Listing::with(['unit.property.media', 'media'])->where('owner_id', $r->user()->id)->latest()->get());
+        return ApiResponse::success(Listing::with(['unit.media', 'unit.property.media', 'media'])->where('owner_id', $r->user()->id)->latest()->get());
     }
 
     public function storeProperty(Request $r)
@@ -377,6 +380,7 @@ class MarketplaceController extends Controller
         $unit = Unit::with('property')->findOrFail($d['unit_id']);
         abort_unless($unit->property->owner_id === $r->user()->id, 403);
         abort_if($unit->property->is_private, 422, 'Un bien patrimonial privé ne peut pas être publié.');
+        abort_unless($unit->status === 'available', 422, 'Seul un logement disponible peut être publié.');
         $status = $d['status'] ?? 'draft';
         $listing = Listing::create([...$d, 'owner_id' => $r->user()->id, 'status' => $status, 'published_at' => $status === 'published' ? now() : null]);
         if ($status === 'published') {
@@ -401,10 +405,18 @@ class MarketplaceController extends Controller
             'available_from' => 'nullable|date',
             'status' => 'sometimes|required|in:draft,pending,published,reserved,rented,suspended,archived',
         ]);
+        if (($d['status'] ?? null) === 'published') {
+            abort_unless(
+                $listing->unit()->where('status', 'available')->exists(),
+                422,
+                'Ce logement est déjà loué et ne peut pas être republié.',
+            );
+        }
         $becomesPublished = ($d['status'] ?? null) === 'published' && $listing->status !== 'published';
         if ($becomesPublished && ! $listing->published_at) {
             $d['published_at'] = now();
-        }$listing->update($d);
+        }
+        $listing->update($d);
         if ($becomesPublished) {
             $alerts->notifyFor($listing);
         }
@@ -422,6 +434,8 @@ class MarketplaceController extends Controller
 
     public function favorite(Request $r, Listing $listing)
     {
+        abort_unless($listing->status === 'published', 422, 'Cette annonce n’est plus disponible.');
+        abort_unless($listing->unit()->where('status', 'available')->exists(), 422, 'Ce logement est déjà loué.');
         DB::table('favorites')->updateOrInsert(['user_id' => $r->user()->id, 'listing_id' => $listing->id], ['created_at' => now(), 'updated_at' => now()]);
 
         return ApiResponse::success(null, 'Ajouté aux favoris.');
@@ -438,6 +452,8 @@ class MarketplaceController extends Controller
     {
         return ApiResponse::success(Listing::with(['unit.media', 'unit.property.media', 'media', 'owner:id,name,phone'])
             ->whereIn('id', DB::table('favorites')->where('user_id', $r->user()->id)->pluck('listing_id'))
+            ->where('status', 'published')
+            ->whereHas('unit', fn ($unit) => $unit->where('status', 'available'))
             ->latest('published_at')
             ->get());
     }
@@ -484,6 +500,7 @@ class MarketplaceController extends Controller
     public function visit(Request $r, Listing $listing)
     {
         abort_unless($listing->status === 'published', 422, 'Cette annonce n’accepte pas de visite.');
+        abort_unless($listing->unit()->where('status', 'available')->exists(), 422, 'Ce logement est déjà loué.');
         $d = $r->validate(['requested_at' => 'required|date|after:now', 'comment' => 'nullable|string']);
         $id = DB::table('visit_requests')->insertGetId([...$d, 'listing_id' => $listing->id, 'requester_id' => $r->user()->id, 'status' => 'requested', 'created_at' => now(), 'updated_at' => now()]);
         DB::table('notifications')->insert(['user_id' => $listing->owner_id, 'type' => 'visit', 'title' => 'Nouvelle demande de visite', 'body' => 'Une visite est demandée pour '.$listing->title.'.', 'data' => json_encode(['visit_id' => $id, 'listing_id' => $listing->id]), 'created_at' => now(), 'updated_at' => now()]);
@@ -515,9 +532,32 @@ class MarketplaceController extends Controller
     {
         $row = DB::table('visit_requests')->join('listings', 'listings.id', '=', 'visit_requests.listing_id')->where('visit_requests.id', $visit)->where('listings.owner_id', $r->user()->id)->select('visit_requests.*', 'listings.title')->first();
         abort_unless($row, 404);
-        $d = $r->validate(['status' => 'required|in:accepted,confirmed,completed,cancelled']);
-        DB::table('visit_requests')->where('id', $visit)->update(['status' => $d['status'], 'updated_at' => now()]);
-        DB::table('notifications')->insert(['user_id' => $row->requester_id, 'type' => 'visit', 'title' => 'Visite mise à jour', 'body' => 'Votre visite pour '.$row->title.' est maintenant : '.$d['status'].'.', 'data' => json_encode(['visit_id' => $visit]), 'created_at' => now(), 'updated_at' => now()]);
+        $d = $r->validate([
+            'status' => 'required|in:accepted,confirmed,completed,cancelled',
+            'owner_note' => 'nullable|string|max:2000',
+            'proposed_at' => 'nullable|date|after:now',
+            'rejection_reason' => 'required_if:status,cancelled|nullable|string|max:2000',
+        ], [
+            'rejection_reason.required_if' => 'Le motif du refus est requis.',
+            'proposed_at.after' => 'Le nouvel horaire doit être à venir.',
+        ]);
+        $update = [
+            ...$d,
+            'owner_note' => $d['owner_note'] ?? null,
+            'proposed_at' => in_array($d['status'], ['accepted', 'confirmed'], true) ? ($d['proposed_at'] ?? null) : null,
+            'rejection_reason' => $d['status'] === 'cancelled' ? $d['rejection_reason'] : null,
+            'updated_at' => now(),
+        ];
+        DB::table('visit_requests')->where('id', $visit)->update($update);
+        $statusLabel = match ($d['status']) {
+            'accepted', 'confirmed' => 'confirmée',
+            'completed' => 'terminée',
+            'cancelled' => 'refusée',
+        };
+        $detail = $d['status'] === 'cancelled'
+            ? ' Motif : '.$d['rejection_reason']
+            : (isset($d['proposed_at']) ? ' Nouveau créneau proposé : '.$d['proposed_at'].'.' : '');
+        DB::table('notifications')->insert(['user_id' => $row->requester_id, 'type' => 'visit', 'title' => 'Visite mise à jour', 'body' => 'Votre visite pour '.$row->title.' est '.$statusLabel.'.'.$detail, 'data' => json_encode(['visit_id' => $visit]), 'created_at' => now(), 'updated_at' => now()]);
 
         return ApiResponse::success(DB::table('visit_requests')->find($visit), 'Statut de visite mis à jour.');
     }

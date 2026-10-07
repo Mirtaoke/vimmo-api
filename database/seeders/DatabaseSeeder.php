@@ -8,6 +8,10 @@ class DatabaseSeeder extends Seeder
 {
     public function run(): void
     {
-        $this->call([UserSeeder::class, PropertySeeder::class, UnitSeeder::class, ListingSeeder::class, RentalApplicationSeeder::class, LeaseContractSeeder::class, RentScheduleSeeder::class, PaymentSeeder::class, ReceiptSeeder::class, InspectionSeeder::class, InspectionWorkflowSeeder::class, MaintenanceRequestSeeder::class, MaintenanceCommentSeeder::class, DocumentSeeder::class, PatrimonyDocumentSeeder::class, AssetShareSeeder::class, MarketplaceActivitySeeder::class, EventCategorySeeder::class, EventSeeder::class, EventScheduleSeeder::class, TicketTypeSeeder::class, TicketOrderSeeder::class, TicketPaymentSeeder::class, ConversationSeeder::class, MessageSeeder::class, NotificationSeeder::class, AuditLogSeeder::class]);
+        $this->call(EventCategorySeeder::class);
+
+        if (app()->environment('testing')) {
+            $this->call(DemoDatabaseSeeder::class);
+        }
     }
 }

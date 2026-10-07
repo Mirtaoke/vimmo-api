@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Models\Listing;
 use App\Models\Property;
 use App\Models\Unit;
 use App\Models\User;
@@ -43,6 +44,15 @@ class TenantAccountLinkingApiTest extends TestCase
         $owner = User::factory()->create(['role' => 'owner', 'is_active' => true]);
         $property = Property::create(['owner_id' => $owner->id, 'name' => 'Résidence test', 'type' => 'Immeuble', 'is_private' => false]);
         $unit = Unit::create(['property_id' => $property->id, 'reference' => 'A-01', 'type' => 'Appartement', 'status' => 'available', 'monthly_rent' => 175000]);
+        $listing = Listing::create([
+            'owner_id' => $owner->id,
+            'unit_id' => $unit->id,
+            'title' => 'Appartement A-01',
+            'description' => 'Appartement disponible',
+            'price' => 175000,
+            'status' => 'published',
+            'published_at' => now(),
+        ]);
 
         $response = $this->actingAs($owner)->postJson('/api/units/'.$unit->id.'/tenant', [
             'first_name' => 'Awa',
@@ -59,6 +69,10 @@ class TenantAccountLinkingApiTest extends TestCase
         $this->assertDatabaseHas('lease_contracts', ['unit_id' => $unit->id, 'owner_id' => $owner->id, 'tenant_id' => $tenantId, 'rent_amount' => 175000, 'status' => 'active']);
         $this->assertDatabaseCount('rent_schedules', 12);
         $this->assertSame('occupied', $unit->fresh()->status);
+        $this->assertSame('rented', $listing->fresh()->status);
+        $this->getJson('/api/listings')
+            ->assertOk()
+            ->assertJsonMissing(['id' => $listing->id]);
         $this->postJson('/api/auth/login', ['identifier' => 'awa.dossou@example.com', 'password' => 'password'])->assertOk();
     }
 

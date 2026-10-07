@@ -9,14 +9,18 @@ use App\Models\Ticket;
 use App\Models\TicketOrder;
 use App\Models\TicketPayment;
 use App\Models\TicketType;
+use App\Services\TicketPaymentService;
 use App\Support\ApiResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
+use Illuminate\Validation\ValidationException;
 
 class EventController extends Controller
 {
+    public function __construct(private readonly TicketPaymentService $ticketPayments) {}
+
     public function cover(Event $event)
     {
         abort_unless($event->cover_path, 404, 'Couverture introuvable.');
@@ -43,13 +47,17 @@ class EventController extends Controller
         $q = Event::with(['ticketTypes', 'schedules', 'category', 'organizer:id,name,avatar_path'])->where('status', 'published')->where('ends_at', '>=', now());
         if ($r->filled('category')) {
             $q->whereHas('category', fn ($x) => $x->where('slug', $r->category));
-        }if ($r->filled('from')) {
+        }
+        if ($r->filled('from')) {
             $q->where('starts_at', '>=', $r->from);
-        }if ($r->filled('to')) {
+        }
+        if ($r->filled('to')) {
             $q->where('starts_at', '<=', $r->to);
-        }if ($r->filled('max_price')) {
+        }
+        if ($r->filled('max_price')) {
             $q->whereHas('ticketTypes', fn ($x) => $x->where('price', '<=', $r->max_price));
-        }if ($r->filled(['latitude', 'longitude'])) {
+        }
+        if ($r->filled(['latitude', 'longitude'])) {
             $lat = (float) $r->latitude;
             $lng = (float) $r->longitude;
             $radius = max(1, min(500, (float) $r->input('distance_km', 25)));
@@ -85,7 +93,7 @@ class EventController extends Controller
         $d = $this->validated($r);
         $types = $d['ticket_types'];
         $schedules = $d['schedules'];
-        unset($d['ticket_types'],$d['schedules'],$d['cover']);
+        unset($d['ticket_types'], $d['schedules'], $d['cover']);
         if ($r->hasFile('cover')) {
             $d['cover_path'] = $r->file('cover')->store('events', 'public');
         }
@@ -105,21 +113,69 @@ class EventController extends Controller
         $d = $this->validated($r);
         $types = $d['ticket_types'];
         $schedules = $d['schedules'];
-        unset($d['ticket_types'],$d['schedules'],$d['cover']);
+        unset($d['ticket_types'], $d['schedules'], $d['cover']);
         if ($r->hasFile('cover')) {
             $d['cover_path'] = $r->file('cover')->store('events', 'public');
         }
 
         return DB::transaction(function () use ($event, $d, $types, $schedules) {
-            $event->update($d);
-            $event->ticketTypes()->whereNotIn('type', collect($types)->pluck('type'))->delete();
-            foreach ($types as $type) {
-                $event->ticketTypes()->updateOrCreate(['type' => $type['type']], $type);
-            }$event->schedules()->delete();
-            $event->schedules()->createMany($schedules);
+            $lockedEvent = Event::query()->lockForUpdate()->findOrFail($event->id);
+            $incomingTypes = collect($types)->pluck('type');
+            $soldTypesRemoved = $lockedEvent->ticketTypes()
+                ->where('sold', '>', 0)
+                ->whereNotIn('type', $incomingTypes)
+                ->exists();
+            abort_if($soldTypesRemoved, 422, 'Un type de billet déjà vendu ne peut pas être supprimé.');
 
-            return ApiResponse::success($event->load(['ticketTypes', 'schedules', 'category']), 'Événement mis à jour.');
+            foreach ($types as $type) {
+                $current = $lockedEvent->ticketTypes()->where('type', $type['type'])->first();
+                abort_if(
+                    $current && $current->sold > $type['capacity'],
+                    422,
+                    'La capacité du billet « '.$type['type'].' » ne peut pas être inférieure au nombre déjà vendu.',
+                );
+            }
+
+            $lockedEvent->update($d);
+            $lockedEvent->ticketTypes()->whereNotIn('type', $incomingTypes)->delete();
+            foreach ($types as $type) {
+                $lockedEvent->ticketTypes()->updateOrCreate(['type' => $type['type']], $type);
+            }
+            $lockedEvent->schedules()->delete();
+            $lockedEvent->schedules()->createMany($schedules);
+
+            $buyerIds = $lockedEvent->orders()
+                ->where('status', 'paid')
+                ->distinct()
+                ->pluck('buyer_id');
+            foreach ($buyerIds as $buyerId) {
+                DB::table('notifications')->insert([
+                    'user_id' => $buyerId,
+                    'type' => 'event_updated',
+                    'title' => 'Événement mis à jour',
+                    'body' => 'Les informations de « '.$lockedEvent->title.' » ont été actualisées.',
+                    'data' => json_encode(['event_id' => $lockedEvent->id], JSON_THROW_ON_ERROR),
+                    'created_at' => now(),
+                    'updated_at' => now(),
+                ]);
+            }
+
+            return ApiResponse::success($lockedEvent->load(['ticketTypes', 'schedules', 'category']), 'Événement mis à jour.');
         });
+    }
+
+    public function status(Request $r, Event $event)
+    {
+        abort_unless($event->organizer_id === $r->user()->id, 403);
+        $data = $r->validate(['status' => 'required|in:draft,published']);
+        abort_if(
+            $data['status'] === 'draft' && $event->orders()->where('status', 'paid')->exists(),
+            422,
+            'Un événement ayant des billets vendus ne peut pas repasser en brouillon.',
+        );
+        $event->update($data);
+
+        return ApiResponse::success($event->fresh(['ticketTypes', 'schedules', 'category']), 'Statut de l’événement mis à jour.');
     }
 
     public function archive(Request $r, Event $event)
@@ -133,7 +189,50 @@ class EventController extends Controller
 
     private function validated(Request $r): array
     {
-        return $r->validate(['event_category_id' => 'required|exists:event_categories,id', 'title' => 'required|string|max:180', 'theme' => 'nullable|string', 'dress_code' => 'nullable|string', 'description' => 'required|string', 'experience' => 'nullable|string', 'place' => 'required|string', 'place_description' => 'nullable|string', 'latitude' => 'nullable|numeric', 'longitude' => 'nullable|numeric', 'starts_at' => 'required|date', 'ends_at' => 'required|date|after:starts_at', 'status' => 'required|in:draft,published', 'cover' => 'nullable|image|max:10240', 'ticket_types' => 'required|array|min:1', 'ticket_types.*.type' => 'required|string', 'ticket_types.*.price' => 'required|numeric|min:0', 'ticket_types.*.capacity' => 'required|integer|min:1', 'schedules' => 'required|array|min:1', 'schedules.*.date' => 'required|date', 'schedules.*.start_time' => 'required|date_format:H:i', 'schedules.*.end_time' => 'required|date_format:H:i']);
+        $data = $r->validate([
+            'event_category_id' => 'required|exists:event_categories,id',
+            'title' => 'required|string|max:180',
+            'theme' => 'nullable|string|max:180',
+            'dress_code' => 'nullable|string|max:180',
+            'description' => 'required|string',
+            'experience' => 'nullable|string',
+            'place' => 'required|string|max:255',
+            'place_description' => 'nullable|string',
+            'latitude' => 'nullable|numeric|between:-90,90',
+            'longitude' => 'nullable|numeric|between:-180,180',
+            'starts_at' => 'required|date',
+            'ends_at' => 'required|date|after:starts_at',
+            'status' => 'required|in:draft,published',
+            'cover' => 'nullable|image|max:10240',
+            'ticket_types' => 'required|array|min:1',
+            'ticket_types.*.type' => 'required|string|max:100|distinct',
+            'ticket_types.*.price' => 'required|numeric|min:0',
+            'ticket_types.*.capacity' => 'required|integer|min:1',
+            'schedules' => 'required|array|min:1',
+            'schedules.*.date' => 'required|date|distinct',
+            'schedules.*.start_time' => 'required|date_format:H:i',
+            'schedules.*.end_time' => 'required|date_format:H:i',
+        ]);
+
+        $startsAt = now()->parse($data['starts_at']);
+        $endsAt = now()->parse($data['ends_at']);
+        $errors = [];
+
+        foreach ($data['schedules'] as $index => $schedule) {
+            $date = now()->parse($schedule['date']);
+            if ($date->toDateString() < $startsAt->toDateString() || $date->toDateString() > $endsAt->toDateString()) {
+                $errors["schedules.$index.date"] = 'Cette date doit être comprise dans la période de l’événement.';
+            }
+            if ($schedule['end_time'] <= $schedule['start_time']) {
+                $errors["schedules.$index.end_time"] = 'L’heure de fin doit être postérieure à l’heure de début.';
+            }
+        }
+
+        if ($errors !== []) {
+            throw ValidationException::withMessages($errors);
+        }
+
+        return $data;
     }
 
     public function order(Request $r, Event $event)
@@ -147,18 +246,33 @@ class EventController extends Controller
             abort_if($type->sold + $d['quantity'] > $type->capacity, 422, 'Capacité insuffisante.');
             $sandbox = ! app()->environment('production');
             $paid = (float) $type->price === 0.0 || $sandbox;
-            $order = TicketOrder::create(['buyer_id' => $r->user()->id, 'event_id' => $event->id, 'reference' => 'ORD-'.strtoupper(Str::random(10)), 'total' => (float) $type->price * $d['quantity'], 'payment_method' => $d['payment_method'], 'status' => $paid ? 'paid' : 'pending']);
-            TicketPayment::create(['ticket_order_id' => $order->id, 'reference' => 'TPAY-'.strtoupper(Str::random(12)), 'provider' => $d['payment_method'], 'provider_reference' => $sandbox ? 'SANDBOX-'.strtoupper(Str::random(10)) : null, 'amount' => $order->total, 'currency' => 'XOF', 'status' => $paid ? 'paid' : 'initiated', 'paid_at' => $paid ? now() : null, 'metadata' => ['mode' => $sandbox ? 'sandbox' : 'provider', 'quantity' => $d['quantity'], 'ticket_type_id' => $type->id]]);
+            $order = TicketOrder::create(['buyer_id' => $r->user()->id, 'event_id' => $event->id, 'reference' => 'ORD-'.strtoupper(Str::random(10)), 'total' => (float) $type->price * $d['quantity'], 'payment_method' => $d['payment_method'], 'status' => 'pending']);
+            $payment = TicketPayment::create(['ticket_order_id' => $order->id, 'reference' => 'TPAY-'.strtoupper(Str::random(12)), 'provider' => $d['payment_method'], 'provider_reference' => null, 'amount' => $order->total, 'currency' => 'XOF', 'status' => 'initiated', 'paid_at' => null, 'metadata' => ['mode' => $sandbox ? 'sandbox' : 'provider', 'quantity' => $d['quantity'], 'ticket_type_id' => $type->id]]);
             if ($paid) {
-                for ($i = 0; $i < $d['quantity']; $i++) {
-                    Ticket::create(['ticket_order_id' => $order->id, 'ticket_type_id' => $type->id, 'code' => (string) Str::uuid()]);
-                }
-                $type->increment('sold', $d['quantity']);
-                DB::table('notifications')->insert(['user_id' => $r->user()->id, 'type' => 'ticket', 'title' => 'Billets confirmés', 'body' => 'Votre commande '.$order->reference.' est confirmée.', 'data' => json_encode(['order_id' => $order->id]), 'created_at' => now(), 'updated_at' => now()]);
+                $this->ticketPayments->confirm($payment, 'SANDBOX-'.strtoupper(Str::random(10)));
             }
 
-            return ApiResponse::success($order->load(['payment', 'tickets.ticketType', 'event']), $paid ? 'Paiement confirmé et billets générés.' : 'Paiement initialisé. Confirmez-le auprès du prestataire pour recevoir vos billets.', 201);
+            return ApiResponse::success($order->fresh(['payment', 'tickets.ticketType', 'event']), $paid ? 'Paiement confirmé et billets générés.' : 'Paiement initialisé. Confirmez-le auprès du prestataire pour recevoir vos billets.', 201);
         });
+    }
+
+    public function paymentWebhook(Request $r)
+    {
+        $secret = (string) config('services.vimmo_event_payments.webhook_secret');
+        abort_if($secret === '', 503, 'Le webhook de paiement n’est pas configuré.');
+        $signature = (string) $r->header('X-Vimmo-Signature');
+        abort_unless(hash_equals(hash_hmac('sha256', $r->getContent(), $secret), $signature), 401, 'Signature de paiement invalide.');
+        $data = $r->validate([
+            'payment_reference' => 'required|string|exists:ticket_payments,reference',
+            'provider_reference' => 'nullable|string|max:255',
+            'status' => 'required|in:paid,failed',
+        ]);
+        $payment = TicketPayment::query()->where('reference', $data['payment_reference'])->firstOrFail();
+        $payment = $data['status'] === 'paid'
+            ? $this->ticketPayments->confirm($payment, $data['provider_reference'] ?? null)
+            : $this->ticketPayments->fail($payment, $data['provider_reference'] ?? null);
+
+        return ApiResponse::success($payment, 'Paiement traité.');
     }
 
     public function tickets(Request $r)
@@ -178,8 +292,18 @@ class EventController extends Controller
                     $ticket->ticketType()->decrement('sold');
                     $ticket->update(['status' => 'cancelled']);
                 }
-            }$order->update(['status' => 'cancelled']);
+            }
+            $order->update(['status' => 'cancelled']);
             $order->payment?->update(['status' => 'refunded']);
+            DB::table('notifications')->insert([
+                'user_id' => $order->event->organizer_id,
+                'type' => 'ticket_cancelled',
+                'title' => 'Commande annulée',
+                'body' => 'La commande '.$order->reference.' a été annulée.',
+                'data' => json_encode(['order_id' => $order->id, 'event_id' => $order->event_id], JSON_THROW_ON_ERROR),
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
 
             return ApiResponse::success($order->fresh(['payment', 'tickets']), 'Commande annulée et remboursement enregistré.');
         });
@@ -192,6 +316,15 @@ class EventController extends Controller
         abort_unless($ticket->order->event->organizer_id === $r->user()->id, 403);
         abort_unless($ticket->status === 'valid', 422, 'Billet déjà utilisé ou invalide.');
         $ticket->update(['status' => 'used', 'scanned_at' => now(), 'scanned_by' => $r->user()->id]);
+        DB::table('notifications')->insert([
+            'user_id' => $ticket->order->buyer_id,
+            'type' => 'ticket_scanned',
+            'title' => 'Entrée validée',
+            'body' => 'Votre billet pour « '.$ticket->order->event->title.' » vient d’être validé.',
+            'data' => json_encode(['order_id' => $ticket->order->id, 'event_id' => $ticket->order->event_id], JSON_THROW_ON_ERROR),
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
 
         return ApiResponse::success($ticket, 'Entrée validée.');
     }
