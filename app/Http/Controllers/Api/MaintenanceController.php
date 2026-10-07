@@ -10,6 +10,7 @@ use App\Models\Unit;
 use App\Support\ApiResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Storage;
 
 class MaintenanceController extends Controller
 {
@@ -68,9 +69,15 @@ return ApiResponse::success($q->latest()->get());
     {
         abort_unless($maintenance->reported_by === $r->user()->id, 403);
         $d = $r->validate([
-            'status' => 'required|in:processing,resolved',
+            'status' => 'required|in:received,processing,resolved',
             'availability_notes' => 'nullable|string|max:1000',
         ]);
+        if ($d['status'] === 'received' && ! in_array($maintenance->status, ['new', 'received'], true)) {
+            return ApiResponse::error('Un signalement commencé ne peut plus revenir en attente.', 422);
+        }
+        if (in_array($maintenance->status, ['resolved', 'closed'], true) && $d['status'] !== 'resolved') {
+            return ApiResponse::error('Un signalement réglé ne peut plus être rouvert.', 422);
+        }
         $maintenance->update($d);
         $this->notify(
             $maintenance->unit->property->owner_id,
@@ -81,6 +88,51 @@ return ApiResponse::success($q->latest()->get());
         );
 
         return ApiResponse::success($maintenance->fresh(['comments', 'media']), 'Signalement mis à jour.');
+    }
+
+    public function updateByTenant(Request $r, MaintenanceRequest $maintenance)
+    {
+        if ($maintenance->reported_by !== $r->user()->id) {
+            return ApiResponse::error('Ce signalement ne vous appartient pas.', 403);
+        }
+        if (! in_array($maintenance->status, ['new', 'received'], true)) {
+            return ApiResponse::error('Un signalement en cours ou terminé ne peut plus être modifié.', 422);
+        }
+
+        $data = $r->validate([
+            'category' => 'required|in:fuite,panne_electrique,serrure,plomberie,climatisation,toiture,autre',
+            'title' => 'required|string|max:180',
+            'description' => 'required|string|max:5000',
+            'availability_notes' => 'nullable|string|max:1000',
+            'priority' => 'required|in:low,normal,high,urgent',
+        ]);
+        $maintenance->update($data);
+
+        return ApiResponse::success(
+            $maintenance->fresh(['unit.property', 'media', 'comments.user:id,name']),
+            'Signalement modifié.',
+        );
+    }
+
+    public function destroyByTenant(Request $r, MaintenanceRequest $maintenance)
+    {
+        if ($maintenance->reported_by !== $r->user()->id) {
+            return ApiResponse::error('Ce signalement ne vous appartient pas.', 403);
+        }
+        if (! in_array($maintenance->status, ['new', 'received'], true)) {
+            return ApiResponse::error('Un signalement en cours ou terminé ne peut plus être supprimé.', 422);
+        }
+
+        DB::transaction(function () use ($maintenance): void {
+            foreach ($maintenance->media as $media) {
+                Storage::disk($media->disk)->delete($media->path);
+            }
+            $maintenance->comments()->delete();
+            $maintenance->media()->delete();
+            $maintenance->delete();
+        });
+
+        return ApiResponse::success(null, 'Signalement supprimé.');
     }
 
     public function comment(Request $r, MaintenanceRequest $maintenance)

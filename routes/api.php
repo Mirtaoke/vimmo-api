@@ -120,6 +120,8 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/inspections/{inspection}/download', [InspectionController::class, 'downloadPdf']);
     Route::get('/maintenance', [MaintenanceController::class, 'index']);
     Route::post('/maintenance', [MaintenanceController::class, 'store'])->middleware('role:tenant');
+    Route::patch('/maintenance/{maintenance}', [MaintenanceController::class, 'updateByTenant'])->middleware('role:tenant');
+    Route::delete('/maintenance/{maintenance}', [MaintenanceController::class, 'destroyByTenant'])->middleware('role:tenant');
     Route::patch('/maintenance/{maintenance}/tenant-status', [MaintenanceController::class, 'tenantStatus'])->middleware('role:tenant');
     Route::get('/maintenance/{maintenance}', [MaintenanceController::class, 'show']);
     Route::post('/maintenance/{maintenance}/comments', [MaintenanceController::class, 'comment']);

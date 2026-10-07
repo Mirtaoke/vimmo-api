@@ -69,6 +69,41 @@ class ExtendedFlowsApiTest extends TestCase
         $this->actingAs($other)->getJson('/api/maintenance/'.$maintenance->id)->assertForbidden();
     }
 
+    public function test_tenant_can_edit_or_delete_only_a_pending_maintenance_request(): void
+    {
+        $this->seed();
+        $maintenance = MaintenanceRequest::firstOrFail();
+        $tenant = User::findOrFail($maintenance->reported_by);
+        $maintenance->update(['status' => 'received']);
+
+        $this->actingAs($tenant)->patchJson('/api/maintenance/'.$maintenance->id, [
+            'category' => 'plomberie',
+            'title' => 'Fuite sous l’évier',
+            'description' => 'La fuite reste visible lorsque le robinet est fermé.',
+            'availability_notes' => 'Disponible à partir de 18 h.',
+            'priority' => 'high',
+        ])->assertOk()
+            ->assertJsonPath('data.title', 'Fuite sous l’évier')
+            ->assertJsonPath('data.priority', 'high');
+
+        $maintenance->update(['status' => 'processing']);
+        $this->actingAs($tenant)->patchJson('/api/maintenance/'.$maintenance->id, [
+            'category' => 'plomberie',
+            'title' => 'Titre modifié',
+            'description' => 'Description modifiée.',
+            'priority' => 'normal',
+        ])->assertUnprocessable();
+        $this->actingAs($tenant)
+            ->deleteJson('/api/maintenance/'.$maintenance->id)
+            ->assertUnprocessable();
+
+        $maintenance->update(['status' => 'received']);
+        $this->actingAs($tenant)
+            ->deleteJson('/api/maintenance/'.$maintenance->id)
+            ->assertOk();
+        $this->assertDatabaseMissing('maintenance_requests', ['id' => $maintenance->id]);
+    }
+
     public function test_owner_can_read_arrears_and_send_reminder(): void
     {
         $this->seed();
