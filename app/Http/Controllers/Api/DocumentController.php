@@ -124,6 +124,10 @@ class DocumentController extends Controller
 
     private function resource(Media $media): array
     {
+        $contract = $media->mediable instanceof LeaseContract
+            ? $media->mediable->loadMissing(['unit.property', 'tenant:id,name,email'])
+            : null;
+
         return [
             'id' => $media->id,
             'title' => $media->label,
@@ -132,6 +136,10 @@ class DocumentController extends Controller
             'mime_type' => $media->mime_type,
             'size' => $media->size,
             'contract_id' => $media->mediable instanceof LeaseContract ? $media->mediable_id : null,
+            'contract_reference' => $contract?->reference,
+            'property_name' => $contract?->unit?->property?->name,
+            'unit_reference' => $contract?->unit?->reference,
+            'tenant_name' => $contract?->tenant?->name,
             'created_at' => $media->created_at,
             'download_path' => '/documents/'.$media->id.'/download',
         ];

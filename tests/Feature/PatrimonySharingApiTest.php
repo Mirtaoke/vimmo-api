@@ -20,7 +20,7 @@ class PatrimonySharingApiTest extends TestCase
         Mail::fake();
         $this->seed();
         $owner = User::where('email', 'proprietaire@vimmo.bj')->firstOrFail();
-        $property = Property::where('owner_id', $owner->id)->where('is_private', true)->firstOrFail();
+        $property = $this->privateProperty($owner);
         $this->actingAs($owner)->postJson('/api/patrimony/'.$property->id.'/shares', ['name' => 'Clarisse Inconnue', 'email' => 'adresse.absente@vimmo.bj', 'permission' => 'view'])->assertCreated();
         $recipient = User::where('email', 'adresse.absente@vimmo.bj')->firstOrFail();
         $this->assertSame('family_member', $recipient->role);
@@ -38,7 +38,7 @@ class PatrimonySharingApiTest extends TestCase
         $this->seed();
         $owner = User::where('email', 'proprietaire@vimmo.bj')->firstOrFail();
         $recipient = User::where('email', 'famille@vimmo.bj')->firstOrFail();
-        $property = Property::where('owner_id', $owner->id)->where('is_private', true)->firstOrFail();
+        $property = $this->privateProperty($owner);
         $this->actingAs($owner)->postJson('/api/patrimony/'.$property->id.'/shares', ['name' => $recipient->name, 'email' => $recipient->email, 'permission' => 'documents'])->assertCreated();
         $this->actingAs($recipient)->getJson('/api/patrimony/shared-with-me')->assertOk()->assertJsonFragment(['id' => $property->id, 'share_permission' => 'documents']);
         Mail::assertSent(PatrimonySharedMail::class, fn (PatrimonySharedMail $mail): bool => $mail->hasTo($recipient->email)
@@ -61,7 +61,7 @@ class PatrimonySharingApiTest extends TestCase
         $owner = User::where('email', 'proprietaire@vimmo.bj')->firstOrFail();
         $manager = User::where('email', 'famille@vimmo.bj')->firstOrFail();
         $viewer = User::factory()->create(['role' => 'family_member']);
-        $property = Property::where('owner_id', $owner->id)->where('is_private', true)->firstOrFail();
+        $property = $this->privateProperty($owner);
 
         $this->actingAs($owner)->postJson('/api/patrimony/'.$property->id.'/shares', [
             'name' => $manager->name,
@@ -87,7 +87,19 @@ class PatrimonySharingApiTest extends TestCase
         $this->seed();
         $owner = User::where('email', 'proprietaire@vimmo.bj')->firstOrFail();
         $recipient = User::where('email', 'famille@vimmo.bj')->firstOrFail();
-        $property = Property::where('owner_id', $owner->id)->where('is_private', true)->firstOrFail();
+        $property = $this->privateProperty($owner);
+        Media::create([
+            'user_id' => $owner->id,
+            'mediable_type' => Property::class,
+            'mediable_id' => $property->id,
+            'collection' => 'documents',
+            'label' => 'Document privé',
+            'disk' => 'private',
+            'path' => 'tests/document-prive.pdf',
+            'mime_type' => 'application/pdf',
+            'size' => 10,
+            'metadata' => ['original_name' => 'document-prive.pdf'],
+        ]);
         $media = Media::where('mediable_type', Property::class)->where('mediable_id', $property->id)->where('collection', 'documents')->firstOrFail();
         $this->actingAs($owner)->postJson('/api/patrimony/'.$property->id.'/shares', ['name' => $recipient->name, 'email' => $recipient->email, 'permission' => 'view'])->assertCreated();
         $this->actingAs($recipient)->get('/api/media/'.$media->id.'/download')->assertForbidden();
@@ -121,5 +133,15 @@ class PatrimonySharingApiTest extends TestCase
             ->assertOk()
             ->assertHeader('content-type', 'application/pdf')
             ->assertDownload('titre-de-propriete.pdf');
+    }
+
+    private function privateProperty(User $owner): Property
+    {
+        return Property::create([
+            'owner_id' => $owner->id,
+            'name' => 'Bien familial de test',
+            'type' => 'Maison',
+            'is_private' => true,
+        ]);
     }
 }

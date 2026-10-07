@@ -10,11 +10,14 @@ class PropertySeeder extends Seeder
 {
     public function run(): void
     {
+        Property::where('name', 'Parcelle Agblangandan')
+            ->whereHas('owner', fn ($query) => $query->where('email', 'proprietaire@vimmo.bj'))
+            ->delete();
+
         $rows = [
             ['proprietaire@vimmo.bj', 'Villa Azur', 'Villa', 'Route des Pêches', 'Fidjrossè', 'Cotonou', 180, false, 6.3540, 2.3650],
             ['proprietaire@vimmo.bj', 'Penthouse Naya', 'Appartement', 'Rue 2350', 'Haie Vive', 'Cotonou', 142, false, 6.3610, 2.4000],
             ['proprietaire@vimmo.bj', 'Maison Kora', 'Maison', 'Quartier Zomaï', 'Zomaï', 'Ouidah', 210, false, 6.3630, 2.0860],
-            ['proprietaire@vimmo.bj', 'Parcelle Agblangandan', 'Parcelle', 'RNIE 1', 'Agblangandan', 'Sèmè-Podji', 1240, true, 6.3860, 2.5110],
             ['mireille.proprietaire@vimmo.bj', 'Résidence Émeraude', 'Appartement', 'Boulevard de la Marina', 'Ganhi', 'Cotonou', 118, false, 6.3568, 2.4302],
             ['mireille.proprietaire@vimmo.bj', 'Villa Palmeraie', 'Villa', 'Route de l’aéroport', 'Fidjrossè', 'Cotonou', 245, false, 6.3521, 2.3781],
             ['mireille.proprietaire@vimmo.bj', 'Studio Cocotiers', 'Studio', 'Rue des Cocotiers', 'Cadjèhoun', 'Cotonou', 48, false, 6.3577, 2.3918],

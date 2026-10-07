@@ -26,7 +26,7 @@ class RentalController extends Controller
 {
     public function contracts(Request $r)
     {
-        $q = LeaseContract::with(['unit.property', 'owner:id,name,phone', 'tenant:id,name,email,phone', 'schedules']);
+        $q = LeaseContract::with(['unit.media', 'unit.property.media', 'owner:id,name,phone', 'tenant:id,name,email,phone', 'schedules']);
         $q->where($r->user()->role === 'owner' ? 'owner_id' : 'tenant_id', $r->user()->id);
 
         return ApiResponse::success($q->latest()->get());
@@ -102,10 +102,17 @@ class RentalController extends Controller
                 'due_day' => $d['due_day'],
                 'status' => 'active',
             ]);
-            $start = Carbon::parse($d['starts_at'])->startOfMonth();
+            $contractStart = Carbon::parse($d['starts_at'])->startOfDay();
+            $firstDueDate = $contractStart->copy()->day((int) $d['due_day']);
+            if ($firstDueDate->lt($contractStart)) {
+                $firstDueDate->addMonth();
+            }
+            $start = $firstDueDate->copy()->startOfMonth();
             $end = isset($d['ends_at']) ? Carbon::parse($d['ends_at'])->startOfMonth() : $start->copy()->addMonths(11);
             while ($start->lte($end)) {
-                RentSchedule::create(['lease_contract_id' => $contract->id, 'period_start' => $start->copy()->startOfMonth(), 'period_end' => $start->copy()->endOfMonth(), 'due_date' => $start->copy()->day((int) $d['due_day']), 'amount' => $rentAmount, 'status' => $start->isFuture() ? 'upcoming' : 'due']);
+                $dueDate = $start->copy()->day((int) $d['due_day']);
+                $status = $dueDate->lt(today()) ? 'late' : ($dueDate->isToday() ? 'due' : 'upcoming');
+                RentSchedule::create(['lease_contract_id' => $contract->id, 'period_start' => $start->copy()->startOfMonth(), 'period_end' => $start->copy()->endOfMonth(), 'due_date' => $dueDate, 'amount' => $rentAmount, 'status' => $status]);
                 $start->addMonth();
             }
             $unit->update(['status' => 'occupied']);
@@ -138,10 +145,17 @@ class RentalController extends Controller
 
         return DB::transaction(function () use ($d, $r, $unit) {
             $contract = LeaseContract::create([...$d, 'owner_id' => $r->user()->id, 'reference' => 'CTR-'.now()->format('Y').'-'.strtoupper(Str::random(6)), 'status' => 'active']);
-            $start = Carbon::parse($d['starts_at'])->startOfMonth();
-            $end = isset($d['ends_at']) ? Carbon::parse($d['ends_at']) : $start->copy()->addMonths(11);
+            $contractStart = Carbon::parse($d['starts_at'])->startOfDay();
+            $firstDueDate = $contractStart->copy()->day((int) $d['due_day']);
+            if ($firstDueDate->lt($contractStart)) {
+                $firstDueDate->addMonth();
+            }
+            $start = $firstDueDate->copy()->startOfMonth();
+            $end = isset($d['ends_at']) ? Carbon::parse($d['ends_at'])->startOfMonth() : $start->copy()->addMonths(11);
             while ($start->lte($end)) {
-                RentSchedule::create(['lease_contract_id' => $contract->id, 'period_start' => $start->copy()->startOfMonth(), 'period_end' => $start->copy()->endOfMonth(), 'due_date' => $start->copy()->day((int) $d['due_day']), 'amount' => $d['rent_amount'], 'status' => $start->isFuture() ? 'upcoming' : 'due']);
+                $dueDate = $start->copy()->day((int) $d['due_day']);
+                $status = $dueDate->lt(today()) ? 'late' : ($dueDate->isToday() ? 'due' : 'upcoming');
+                RentSchedule::create(['lease_contract_id' => $contract->id, 'period_start' => $start->copy()->startOfMonth(), 'period_end' => $start->copy()->endOfMonth(), 'due_date' => $dueDate, 'amount' => $d['rent_amount'], 'status' => $status]);
                 $start->addMonth();
             }$unit->update(['status' => 'occupied']);
 
@@ -151,9 +165,24 @@ class RentalController extends Controller
 
     public function schedules(Request $r)
     {
-        $q = RentSchedule::with('contract.unit.property')->whereHas('contract', fn ($x) => $x->where($r->user()->role === 'owner' ? 'owner_id' : 'tenant_id', $r->user()->id));
+        $q = RentSchedule::with(['contract.unit.property', 'contract.tenant:id,name'])->whereHas('contract', fn ($x) => $x->where($r->user()->role === 'owner' ? 'owner_id' : 'tenant_id', $r->user()->id));
+        $rows = $q->orderBy('due_date')->get();
+        foreach ($rows as $schedule) {
+            $amount = (float) $schedule->amount;
+            $paid = (float) $schedule->paid_amount;
+            $status = $paid >= $amount
+                ? 'paid'
+                : ($paid > 0
+                    ? 'partial'
+                    : ($schedule->due_date->lt(today())
+                        ? 'late'
+                        : ($schedule->due_date->isToday() ? 'due' : 'upcoming')));
+            if ($schedule->status !== $status) {
+                $schedule->update(['status' => $status]);
+            }
+        }
 
-        return ApiResponse::success($q->orderBy('due_date')->get());
+        return ApiResponse::success($rows);
     }
 
     public function payments(Request $r)
@@ -231,7 +260,15 @@ class RentalController extends Controller
 
     public function receipts(Request $r)
     {
-        $rows = DB::table('receipts')->join('payments', 'payments.id', '=', 'receipts.payment_id')->join('lease_contracts', 'lease_contracts.id', '=', 'payments.lease_contract_id')->where($r->user()->role === 'owner' ? 'lease_contracts.owner_id' : 'lease_contracts.tenant_id', $r->user()->id)->select('receipts.*', 'payments.amount', 'payments.paid_at')->latest('receipts.generated_at')->get()->map(function ($receipt) {
+        $rows = DB::table('receipts')
+            ->join('payments', 'payments.id', '=', 'receipts.payment_id')
+            ->join('lease_contracts', 'lease_contracts.id', '=', 'payments.lease_contract_id')
+            ->join('units', 'units.id', '=', 'lease_contracts.unit_id')
+            ->join('properties', 'properties.id', '=', 'units.property_id')
+            ->join('users as tenants', 'tenants.id', '=', 'lease_contracts.tenant_id')
+            ->where($r->user()->role === 'owner' ? 'lease_contracts.owner_id' : 'lease_contracts.tenant_id', $r->user()->id)
+            ->select('receipts.*', 'payments.amount', 'payments.paid_at', 'lease_contracts.reference as contract_reference', 'units.reference as unit_reference', 'properties.name as property_name', 'tenants.name as tenant_name')
+            ->latest('receipts.generated_at')->get()->map(function ($receipt) {
             $receipt->download_path = '/receipts/'.$receipt->id.'/download';
 
             return $receipt;

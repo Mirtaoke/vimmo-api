@@ -16,13 +16,13 @@ class AuthorizationApiTest extends TestCase
         $this->actingAs($user)->postJson('/api/properties', ['name' => 'Secret', 'type' => 'Maison'])->assertForbidden();
     }
 
-    public function test_owner_sees_owned_rental_and_family_properties(): void
+    public function test_owner_sees_only_owned_properties(): void
     {
         $this->seed();
         $owner = User::where('role', 'owner')->first();
         $this->actingAs($owner)->getJson('/api/properties')
             ->assertOk()
-            ->assertJsonCount(4, 'data')
-            ->assertJsonFragment(['name' => 'Parcelle Agblangandan', 'is_private' => true]);
+            ->assertJsonCount(3, 'data')
+            ->assertJsonMissing(['name' => 'Parcelle Agblangandan']);
     }
 }

@@ -39,7 +39,11 @@ class DashboardController extends Controller
                 'rent_due_month' => $rentDueMonth,
                 'rent_collected_for_month' => $rentCollectedForMonth,
                 'collection_rate' => $rentDueMonth > 0 ? round(min(100, ($rentCollectedForMonth / $rentDueMonth) * 100), 1) : 0,
-                'rent_pending' => (float) (clone $ownerSchedules)->whereIn('rent_schedules.status', ['due', 'partial', 'late', 'unpaid'])->sum(DB::raw('CASE WHEN rent_schedules.amount > rent_schedules.paid_amount THEN rent_schedules.amount - rent_schedules.paid_amount ELSE 0 END')),
+                'rent_pending' => (float) (clone $ownerSchedules)
+                    ->whereDate('rent_schedules.due_date', '<', today())
+                    ->whereColumn('rent_schedules.due_date', '>=', 'lease_contracts.starts_at')
+                    ->whereNotIn('rent_schedules.status', ['paid', 'cancelled'])
+                    ->sum(DB::raw('CASE WHEN rent_schedules.amount > rent_schedules.paid_amount THEN rent_schedules.amount - rent_schedules.paid_amount ELSE 0 END')),
             ];
         } elseif ($u->role === 'tenant') {
             $contract = DB::table('lease_contracts')->where('tenant_id', $u->id)->where('status', 'active')->first();

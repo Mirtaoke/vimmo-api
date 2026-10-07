@@ -5,12 +5,38 @@ namespace Tests\Feature;
 use App\Models\Property;
 use App\Models\Unit;
 use App\Models\User;
+use Carbon\Carbon;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
 
 class TenantAccountLinkingApiTest extends TestCase
 {
     use RefreshDatabase;
+
+    public function test_first_due_date_never_precedes_the_contract_start(): void
+    {
+        Carbon::setTestNow('2026-10-07 10:00:00');
+        $owner = User::factory()->create(['role' => 'owner', 'is_active' => true]);
+        $property = Property::create(['owner_id' => $owner->id, 'name' => 'Résidence test', 'type' => 'Immeuble', 'is_private' => false]);
+        $unit = Unit::create(['property_id' => $property->id, 'reference' => 'A-01', 'type' => 'Appartement', 'status' => 'available', 'monthly_rent' => 80000]);
+
+        $this->actingAs($owner)->postJson('/api/units/'.$unit->id.'/tenant', [
+            'first_name' => 'Awa',
+            'last_name' => 'Dossou',
+            'email' => 'awa.echeance@example.com',
+            'phone' => '+2290197000099',
+            'starts_at' => '2026-10-07',
+            'due_day' => 5,
+        ])->assertCreated();
+
+        $this->assertDatabaseHas('rent_schedules', [
+            'due_date' => '2026-11-05 00:00:00',
+            'amount' => 80000,
+            'status' => 'upcoming',
+        ]);
+        $this->assertDatabaseMissing('rent_schedules', ['due_date' => '2026-10-05 00:00:00']);
+        Carbon::setTestNow();
+    }
 
     public function test_owner_creates_a_verified_tenant_linked_to_an_active_contract(): void
     {
