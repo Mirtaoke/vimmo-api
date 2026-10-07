@@ -49,4 +49,24 @@ class TenantAccountLinkingApiTest extends TestCase
             ->assertStatus(422)
             ->assertJsonPath('message', 'Ce logement possède déjà un contrat actif.');
     }
+
+    public function test_owner_cannot_attach_a_tenant_to_a_family_property(): void
+    {
+        $owner = User::factory()->create(['role' => 'owner', 'is_active' => true]);
+        $property = Property::create(['owner_id' => $owner->id, 'name' => 'Maison familiale', 'type' => 'Maison', 'is_private' => true]);
+        $unit = Unit::create(['property_id' => $property->id, 'reference' => 'Maison principale', 'type' => 'Maison', 'status' => 'available', 'monthly_rent' => 0]);
+
+        $this->actingAs($owner)->postJson('/api/units/'.$unit->id.'/tenant', [
+            'first_name' => 'Awa',
+            'last_name' => 'Dossou',
+            'email' => 'awa.famille@example.com',
+            'phone' => '+2290197000010',
+            'starts_at' => '2026-10-01',
+            'rent_amount' => 150000,
+            'due_day' => 5,
+        ])->assertStatus(422)
+            ->assertJsonPath('message', 'Un locataire ne peut être associé qu’à un bien locatif.');
+
+        $this->assertDatabaseMissing('users', ['email' => 'awa.famille@example.com']);
+    }
 }

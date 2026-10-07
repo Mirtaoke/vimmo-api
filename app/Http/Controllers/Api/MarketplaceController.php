@@ -157,6 +157,13 @@ class MarketplaceController extends Controller
             $this->propertyMessages(),
             $this->propertyAttributes(),
         );
+        if (($d['is_private'] ?? false) && ! $property->is_private) {
+            abort_if(
+                $property->units()->whereHas('contracts', fn ($query) => $query->where('status', 'active'))->exists(),
+                422,
+                'Un bien avec un contrat locatif actif ne peut pas devenir familial.',
+            );
+        }
         $property->update($d);
 
         return ApiResponse::success($property->fresh(['units.media', 'media']), 'Bien mis à jour.');
@@ -195,7 +202,7 @@ class MarketplaceController extends Controller
     {
         abort_unless($property->owner_id === $r->user()->id, 403);
         $d = $r->validate(
-            ['reference' => 'required|string', 'type' => 'required|string', 'description' => 'nullable|string', 'surface' => 'nullable|numeric', 'rooms' => 'integer|min:0', 'bedrooms' => 'integer|min:0', 'bathrooms' => 'integer|min:0', 'monthly_rent' => 'numeric|min:0', 'amenities' => 'nullable|array'],
+            ['reference' => 'required|string', 'type' => 'required|string', 'description' => 'nullable|string', 'surface' => 'nullable|numeric', 'rooms' => 'integer|min:0', 'bedrooms' => 'integer|min:0', 'bathrooms' => 'integer|min:0', 'monthly_rent' => $property->is_private ? 'nullable|numeric|min:0' : 'required|numeric|min:1', 'amenities' => 'nullable|array'],
             $this->unitMessages(),
             $this->unitAttributes(),
         );
@@ -206,6 +213,7 @@ class MarketplaceController extends Controller
     public function updateUnit(Request $r, Unit $unit)
     {
         abort_unless($unit->property()->where('owner_id', $r->user()->id)->exists(), 403);
+        $unit->loadMissing('property');
         $data = $r->validate([
             'reference' => 'sometimes|required|string|max:120',
             'type' => 'sometimes|required|string|max:120',
@@ -214,7 +222,9 @@ class MarketplaceController extends Controller
             'rooms' => 'sometimes|integer|min:0',
             'bedrooms' => 'sometimes|integer|min:0',
             'bathrooms' => 'sometimes|integer|min:0',
-            'monthly_rent' => 'sometimes|numeric|min:0',
+            'monthly_rent' => $unit->property->is_private
+                ? 'sometimes|nullable|numeric|min:0'
+                : 'sometimes|required|numeric|min:1',
             'amenities' => 'nullable|array',
             'status' => 'sometimes|required|in:available,reserved,maintenance,inspection,inactive',
         ], $this->unitMessages(), $this->unitAttributes());

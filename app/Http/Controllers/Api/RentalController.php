@@ -34,6 +34,7 @@ class RentalController extends Controller
     public function createTenant(Request $r, Unit $unit)
     {
         abort_unless($unit->property()->where('owner_id', $r->user()->id)->exists(), 403);
+        abort_if($unit->property()->where('is_private', true)->exists(), 422, 'Un locataire ne peut être associé qu’à un bien locatif.');
         abort_if($unit->contracts()->where('status', 'active')->exists(), 422, 'Ce logement possède déjà un contrat actif.');
         $r->merge([
             'email' => strtolower(trim((string) $r->input('email'))),
@@ -97,6 +98,7 @@ class RentalController extends Controller
         $d = $r->validate(['unit_id' => 'required|exists:units,id', 'tenant_id' => 'required|exists:users,id', 'starts_at' => 'required|date', 'ends_at' => 'nullable|date|after:starts_at', 'rent_amount' => 'required|numeric|min:1', 'deposit_amount' => 'nullable|numeric|min:0', 'charges_amount' => 'nullable|numeric|min:0', 'due_day' => 'required|integer|between:1,28', 'terms' => 'nullable|string']);
         $unit = Unit::with('property')->findOrFail($d['unit_id']);
         abort_unless($unit->property->owner_id === $r->user()->id, 403);
+        abort_if($unit->property->is_private, 422, 'Un contrat locatif ne peut pas être créé pour un bien familial.');
 
         return DB::transaction(function () use ($d, $r, $unit) {
             $contract = LeaseContract::create([...$d, 'owner_id' => $r->user()->id, 'reference' => 'CTR-'.now()->format('Y').'-'.strtoupper(Str::random(6)), 'status' => 'active']);
