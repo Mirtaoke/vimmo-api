@@ -12,9 +12,29 @@ use App\Services\ListingAlertService;
 use App\Support\ApiResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Storage;
 
 class MarketplaceController extends Controller
 {
+    public function viewMedia(Media $media)
+    {
+        abort_unless(
+            $media->disk === 'public' &&
+                in_array($media->collection, ['gallery', 'photos'], true) &&
+                str_starts_with((string) $media->mime_type, 'image/'),
+            404,
+        );
+        $disk = Storage::disk('public');
+        abort_unless($disk->exists($media->path), 404, 'Image introuvable.');
+
+        return response($disk->get($media->path), 200, [
+            'Content-Type' => $media->mime_type ?: 'image/jpeg',
+            'Content-Length' => (string) $disk->size($media->path),
+            'Content-Disposition' => 'inline',
+            'Cache-Control' => 'private, max-age=21600',
+        ]);
+    }
+
     public function listings(Request $r)
     {
         $q = Listing::with(['unit.media', 'unit.property.media', 'media', 'owner:id,name,phone'])->where('status', 'published');

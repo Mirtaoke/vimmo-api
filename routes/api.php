@@ -19,6 +19,9 @@ use Illuminate\Support\Facades\Route;
 Route::get('/ping', fn () => response()->json(['success' => true, 'message' => 'API VIMMO opérationnelle.']));
 Route::get('/listings', [MarketplaceController::class, 'listings']);
 Route::get('/listings/{listing}', [MarketplaceController::class, 'show']);
+Route::get('/media/{media}/view', [MarketplaceController::class, 'viewMedia'])
+    ->middleware('signed:relative')
+    ->name('media.view');
 Route::get('/event-categories', [EventController::class, 'categories']);
 Route::get('/events', [EventController::class, 'index']);
 Route::get('/events/{event}', [EventController::class, 'show']);
