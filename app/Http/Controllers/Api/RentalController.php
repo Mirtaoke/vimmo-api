@@ -20,6 +20,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
+use Illuminate\Validation\ValidationException;
 
 class RentalController extends Controller
 {
@@ -40,6 +41,21 @@ class RentalController extends Controller
             'email' => strtolower(trim((string) $r->input('email'))),
             'phone' => preg_replace('/[\s().-]+/', '', trim((string) $r->input('phone'))),
         ]);
+        $normalizedPhone = $this->normalizePhone((string) $r->input('phone'));
+        $duplicateErrors = [];
+        if (User::whereRaw('LOWER(email) = ?', [(string) $r->input('email')])->exists()) {
+            $duplicateErrors['email'] = ['Cette adresse e-mail appartient déjà à un utilisateur.'];
+        }
+        $phoneAlreadyUsed = User::query()
+            ->whereNotNull('phone')
+            ->get(['id', 'phone'])
+            ->contains(fn (User $user) => $this->normalizePhone((string) $user->phone) === $normalizedPhone);
+        if ($phoneAlreadyUsed) {
+            $duplicateErrors['phone'] = ['Ce numéro de téléphone appartient déjà à un utilisateur.'];
+        }
+        if ($duplicateErrors !== []) {
+            throw ValidationException::withMessages($duplicateErrors);
+        }
         $d = $r->validate([
             'first_name' => 'required|string|max:100',
             'last_name' => 'required|string|max:100',
@@ -91,6 +107,21 @@ class RentalController extends Controller
 
             return ApiResponse::success(['tenant' => $tenant, 'contract' => $contract->load('schedules'), 'default_password' => 'password', 'unit_id' => $unit->id], 'Compte locataire créé et lié au logement.', 201);
         });
+    }
+
+    private function normalizePhone(string $phone): string
+    {
+        $digits = preg_replace('/\D+/', '', $phone) ?? '';
+        if (str_starts_with($digits, '00229')) {
+            $digits = substr($digits, 5);
+        } elseif (str_starts_with($digits, '229')) {
+            $digits = substr($digits, 3);
+        }
+        if (strlen($digits) === 10 && str_starts_with($digits, '01')) {
+            $digits = substr($digits, 2);
+        }
+
+        return $digits;
     }
 
     public function storeContract(Request $r)
