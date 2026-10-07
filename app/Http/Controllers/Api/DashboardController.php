@@ -99,7 +99,7 @@ class DashboardController extends Controller
                 'pending_payments' => $contractId ? DB::table('payments')->where('lease_contract_id', $contractId)->where('status', 'pending')->count() : 0,
                 'receipts' => $contractId ? DB::table('receipts')->join('payments', 'payments.id', '=', 'receipts.payment_id')->where('payments.lease_contract_id', $contractId)->count() : 0,
                 'documents' => $contractId ? DB::table('media')->where('mediable_type', 'App\\Models\\LeaseContract')->where('mediable_id', $contractId)->count() + DB::table('receipts')->join('payments', 'payments.id', '=', 'receipts.payment_id')->where('payments.lease_contract_id', $contractId)->count() : 0,
-                'payments' => $contractId ? DB::table('payments')->where('lease_contract_id', $contractId)->where('status', 'confirmed')->count() : 0,
+                'payments' => $contractId ? DB::table('payments')->where('lease_contract_id', $contractId)->count() : 0,
                 'pending_inspections' => $contractId ? DB::table('inspections')->where('lease_contract_id', $contractId)->where('status', '!=', 'completed')->count() : 0,
                 'open_maintenance' => $unitId ? DB::table('maintenance_requests')->where('unit_id', $unitId)->whereNotIn('status', ['resolved', 'closed'])->count() : 0,
             ];

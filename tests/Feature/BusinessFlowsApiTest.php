@@ -60,6 +60,30 @@ class BusinessFlowsApiTest extends TestCase
             ]);
     }
 
+    public function test_pending_payment_is_immediately_counted_in_tenant_dashboard(): void
+    {
+        $this->seed();
+        $tenant = User::where('role', 'tenant')->firstOrFail();
+        $contract = LeaseContract::where('tenant_id', $tenant->id)
+            ->where('status', 'active')
+            ->firstOrFail();
+        $before = Payment::where('lease_contract_id', $contract->id)->count();
+
+        Payment::create([
+            'lease_contract_id' => $contract->id,
+            'payer_id' => $tenant->id,
+            'reference' => 'PAY-COUNTER-'.uniqid(),
+            'amount' => 1000,
+            'method' => 'mtn_momo',
+            'status' => 'pending',
+            'paid_at' => now(),
+        ]);
+
+        $this->actingAs($tenant)->getJson('/api/dashboard')
+            ->assertOk()
+            ->assertJsonPath('data.payments', $before + 1);
+    }
+
     public function test_new_tenant_dashboard_has_no_fictitious_rental_data(): void
     {
         $tenant = User::factory()->create(['role' => 'tenant']);
