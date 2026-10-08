@@ -15,12 +15,26 @@ use App\Models\TicketType;
 use App\Models\User;
 use App\Services\ListingAlertService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Storage;
 use Tests\TestCase;
 
 class ExtendedFlowsApiTest extends TestCase
 {
     use RefreshDatabase;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        config([
+            'services.kkiapay.public_key' => 'public-test',
+            'services.kkiapay.private_key' => 'private-test',
+            'services.kkiapay.secret' => 'secret-test',
+            'services.kkiapay.sandbox' => true,
+            'services.kkiapay.base_url' => 'https://api-sandbox.kkiapay.me',
+        ]);
+    }
 
     public function test_public_events_are_future_and_ticket_order_has_payment(): void
     {
@@ -29,7 +43,31 @@ class ExtendedFlowsApiTest extends TestCase
         $event = Event::where('status', 'published')->firstOrFail();
         $type = TicketType::where('event_id', $event->id)->where('type', 'VIP')->firstOrFail();
         $this->getJson('/api/events')->assertOk()->assertJsonCount(4, 'data.data');
-        $order = $this->actingAs($seeker)->postJson('/api/events/'.$event->id.'/orders', ['ticket_type_id' => $type->id, 'quantity' => 2, 'payment_method' => 'mobile_money'])->assertCreated()->assertJsonPath('data.payment.status', 'paid')->json('data');
+        $pendingOrder = $this->actingAs($seeker)->postJson('/api/events/'.$event->id.'/orders', [
+            'ticket_type_id' => $type->id,
+            'quantity' => 2,
+            'payment_method' => 'kkiapay',
+        ])->assertCreated()->assertJsonPath('data.status', 'pending');
+        $checkout = $pendingOrder->json('data.checkout');
+
+        Http::preventStrayRequests();
+        Http::fake([
+            'https://api-sandbox.kkiapay.me/api/v1/transactions/status' => Http::response([
+                'status' => 'SUCCESS',
+                'isPaymentSucces' => true,
+                'transactionId' => 'KKP-EXTENDED-FLOW',
+                'amount' => $checkout['amount'],
+                'partnerId' => $checkout['partner_id'],
+            ]),
+        ]);
+
+        $order = $this->actingAs($seeker)
+            ->postJson('/api/kkiapay/transactions/'.$checkout['id'].'/verify', [
+                'transaction_id' => 'KKP-EXTENDED-FLOW',
+            ])
+            ->assertOk()
+            ->assertJsonPath('data.resource.payment.status', 'paid')
+            ->json('data.resource');
         $this->assertDatabaseCount('tickets', 4);
         $this->assertDatabaseHas('ticket_payments', ['ticket_order_id' => $order['id'], 'status' => 'paid']);
     }

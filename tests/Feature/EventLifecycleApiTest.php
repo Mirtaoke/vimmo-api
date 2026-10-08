@@ -6,25 +6,37 @@ use App\Models\Event;
 use App\Models\EventCategory;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Http;
+use Illuminate\Testing\TestResponse;
 use Tests\TestCase;
 
 class EventLifecycleApiTest extends TestCase
 {
     use RefreshDatabase;
 
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        config([
+            'services.kkiapay.public_key' => 'public-test',
+            'services.kkiapay.private_key' => 'private-test',
+            'services.kkiapay.secret' => 'secret-test',
+            'services.kkiapay.sandbox' => true,
+            'services.kkiapay.base_url' => 'https://api-sandbox.kkiapay.me',
+        ]);
+    }
+
     public function test_paid_order_notifies_buyer_and_organizer_and_generates_tickets(): void
     {
         [$organizer, $buyer, $event, $ticketType] = $this->eventContext();
 
-        $response = $this->actingAs($buyer)->postJson('/api/events/'.$event->id.'/orders', [
-            'ticket_type_id' => $ticketType->id,
-            'quantity' => 2,
-            'payment_method' => 'mobile_money',
-        ])->assertCreated()
-            ->assertJsonPath('data.status', 'paid')
-            ->assertJsonCount(2, 'data.tickets');
+        $response = $this->buyTickets($buyer, $event, $ticketType->id, 2)
+            ->assertOk()
+            ->assertJsonPath('data.resource.status', 'paid')
+            ->assertJsonCount(2, 'data.resource.tickets');
 
-        $orderId = $response->json('data.id');
+        $orderId = $response->json('data.resource.id');
         $this->assertDatabaseHas('notifications', [
             'user_id' => $buyer->id,
             'type' => 'ticket_confirmed',
@@ -48,11 +60,7 @@ class EventLifecycleApiTest extends TestCase
     public function test_organizer_cannot_remove_or_reduce_an_already_sold_ticket_type(): void
     {
         [$organizer, $buyer, $event, $ticketType] = $this->eventContext();
-        $this->actingAs($buyer)->postJson('/api/events/'.$event->id.'/orders', [
-            'ticket_type_id' => $ticketType->id,
-            'quantity' => 2,
-            'payment_method' => 'bank_card',
-        ])->assertCreated();
+        $this->buyTickets($buyer, $event, $ticketType->id, 2)->assertOk();
 
         $payload = $this->eventPayload($event);
         $payload['ticket_types'] = [['type' => 'Standard', 'price' => 5000, 'capacity' => 1]];
@@ -85,11 +93,7 @@ class EventLifecycleApiTest extends TestCase
     public function test_paid_participant_is_notified_when_event_information_changes(): void
     {
         [$organizer, $buyer, $event, $ticketType] = $this->eventContext();
-        $this->actingAs($buyer)->postJson('/api/events/'.$event->id.'/orders', [
-            'ticket_type_id' => $ticketType->id,
-            'quantity' => 1,
-            'payment_method' => 'mobile_money',
-        ])->assertCreated();
+        $this->buyTickets($buyer, $event, $ticketType->id, 1)->assertOk();
 
         $payload = $this->eventPayload($event);
         $payload['place'] = 'Palais des congrès';
@@ -131,6 +135,34 @@ class EventLifecycleApiTest extends TestCase
         ]);
 
         return [$organizer, $buyer, $event, $ticketType];
+    }
+
+    private function buyTickets(User $buyer, Event $event, int $ticketTypeId, int $quantity): TestResponse
+    {
+        $order = $this->actingAs($buyer)->postJson('/api/events/'.$event->id.'/orders', [
+            'ticket_type_id' => $ticketTypeId,
+            'quantity' => $quantity,
+            'payment_method' => 'kkiapay',
+        ])->assertCreated()->assertJsonPath('data.status', 'pending');
+        $checkout = $order->json('data.checkout');
+        $transactionId = 'KKP-'.strtoupper(fake()->bothify('########'));
+
+        Http::preventStrayRequests();
+        Http::fake([
+            'https://api-sandbox.kkiapay.me/api/v1/transactions/status' => Http::response([
+                'status' => 'SUCCESS',
+                'isPaymentSucces' => true,
+                'transactionId' => $transactionId,
+                'amount' => $checkout['amount'],
+                'partnerId' => $checkout['partner_id'],
+                'method' => 'MOBILE_MONEY',
+            ]),
+        ]);
+
+        return $this->actingAs($buyer)->postJson(
+            '/api/kkiapay/transactions/'.$checkout['id'].'/verify',
+            ['transaction_id' => $transactionId],
+        );
     }
 
     private function eventPayload(Event $event): array

@@ -215,6 +215,7 @@ class RentalController extends Controller
             'contract.tenant:id,name,email,phone',
             'schedules',
             'receipt',
+            'kkiapayTransaction',
         ])->whereHas('contract', fn ($x) => $x->where($r->user()->role === 'owner' ? 'owner_id' : 'tenant_id', $r->user()->id));
 
         return ApiResponse::success($q->latest()->get());

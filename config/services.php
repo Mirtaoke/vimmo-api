@@ -35,8 +35,19 @@ return [
         ],
     ],
 
-    'vimmo_event_payments' => [
-        'webhook_secret' => env('EVENT_PAYMENT_WEBHOOK_SECRET'),
+    'kkiapay' => [
+        'public_key' => env('KKIAPAY_PUBLIC_KEY'),
+        'private_key' => env('KKIAPAY_PRIVATE_KEY'),
+        'secret' => env('KKIAPAY_SECRET'),
+        'sandbox' => filter_var(env('KKIAPAY_SANDBOX', true), FILTER_VALIDATE_BOOL),
+        'webhook_secret' => env('KKIAPAY_WEBHOOK_SECRET'),
+        'base_url' => filter_var(env('KKIAPAY_SANDBOX', true), FILTER_VALIDATE_BOOL)
+            ? 'https://api-sandbox.kkiapay.me'
+            : 'https://api.kkiapay.me',
+        'callback_url' => env('KKIAPAY_CALLBACK_URL'),
+        'theme' => env('KKIAPAY_THEME', '#148477'),
+        'countries' => array_values(array_filter(explode(',', env('KKIAPAY_COUNTRIES', 'BJ')))),
+        'payment_methods' => array_values(array_filter(explode(',', env('KKIAPAY_PAYMENT_METHODS', 'momo,card')))),
     ],
 
 ];

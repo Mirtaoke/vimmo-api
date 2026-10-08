@@ -3,6 +3,7 @@
 namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\MorphOne;
 
 class Payment extends Model
 {
@@ -26,5 +27,10 @@ class Payment extends Model
     public function receipt()
     {
         return $this->hasOne(Receipt::class);
+    }
+
+    public function kkiapayTransaction(): MorphOne
+    {
+        return $this->morphOne(KkiapayTransaction::class, 'payable');
     }
 }

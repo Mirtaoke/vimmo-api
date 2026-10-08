@@ -8,6 +8,7 @@ use App\Http\Controllers\Api\DashboardController;
 use App\Http\Controllers\Api\DocumentController;
 use App\Http\Controllers\Api\EventController;
 use App\Http\Controllers\Api\InspectionController;
+use App\Http\Controllers\Api\KkiapayPaymentController;
 use App\Http\Controllers\Api\MaintenanceController;
 use App\Http\Controllers\Api\MarketplaceController;
 use App\Http\Controllers\Api\NotificationController;
@@ -28,7 +29,7 @@ Route::get('/events/{event}/cover', [EventController::class, 'cover'])
     ->middleware('signed:relative')
     ->name('events.cover');
 Route::get('/events/{event}', [EventController::class, 'show']);
-Route::post('/event-payments/webhook', [EventController::class, 'paymentWebhook'])
+Route::post('/kkiapay/webhook', [KkiapayPaymentController::class, 'webhook'])
     ->middleware('throttle:60,1');
 Route::get('/receipts/verify/{token}', [RentalController::class, 'verifyReceipt']);
 Route::prefix('auth')->middleware('throttle:10,1')->group(function () {
@@ -102,6 +103,9 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/contracts', [RentalController::class, 'contracts']);
     Route::get('/rent-schedules', [RentalController::class, 'schedules']);
     Route::get('/payments', [RentalController::class, 'payments']);
+    Route::post('/payments/kkiapay/intents', [KkiapayPaymentController::class, 'storeRentIntent'])->middleware('role:tenant');
+    Route::post('/kkiapay/transactions/{kkiapayTransaction}/verify', [KkiapayPaymentController::class, 'verify'])->middleware('throttle:20,1');
+    Route::post('/kkiapay/transactions/{kkiapayTransaction}/cancel', [KkiapayPaymentController::class, 'cancel'])->middleware('throttle:20,1');
     Route::post('/payments', [RentalController::class, 'pay'])->middleware('role:tenant');
     Route::post('/payments/record', [RentalController::class, 'recordPayment'])->middleware('role:owner');
     Route::get('/payments/{payment}/proof', [RentalController::class, 'downloadProof']);

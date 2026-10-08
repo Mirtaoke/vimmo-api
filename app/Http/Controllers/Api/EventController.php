@@ -9,6 +9,7 @@ use App\Models\Ticket;
 use App\Models\TicketOrder;
 use App\Models\TicketPayment;
 use App\Models\TicketType;
+use App\Services\KkiapayPaymentService;
 use App\Services\TicketPaymentService;
 use App\Support\ApiResponse;
 use Illuminate\Http\Request;
@@ -19,7 +20,10 @@ use Illuminate\Validation\ValidationException;
 
 class EventController extends Controller
 {
-    public function __construct(private readonly TicketPaymentService $ticketPayments) {}
+    public function __construct(
+        private readonly TicketPaymentService $ticketPayments,
+        private readonly KkiapayPaymentService $kkiapayPayments,
+    ) {}
 
     public function cover(Event $event)
     {
@@ -239,45 +243,35 @@ class EventController extends Controller
     {
         abort_unless($event->status === 'published', 422, 'La billetterie de cet événement est fermée.');
         abort_if($event->ends_at->isPast(), 422, 'Cet événement est terminé.');
-        $d = $r->validate(['ticket_type_id' => 'required|exists:ticket_types,id', 'quantity' => 'required|integer|min:1|max:20', 'payment_method' => 'required|in:mobile_money,bank_card,vimmo_wallet']);
+        $d = $r->validate([
+            'ticket_type_id' => 'required|exists:ticket_types,id',
+            'quantity' => 'required|integer|min:1|max:20',
+            'payment_method' => 'required|in:kkiapay',
+        ]);
 
         return DB::transaction(function () use ($r, $event, $d) {
             $type = TicketType::where('event_id', $event->id)->lockForUpdate()->findOrFail($d['ticket_type_id']);
             abort_if($type->sold + $d['quantity'] > $type->capacity, 422, 'Capacité insuffisante.');
-            $sandbox = ! app()->environment('production');
-            $paid = (float) $type->price === 0.0 || $sandbox;
+            $paid = (float) $type->price === 0.0;
             $order = TicketOrder::create(['buyer_id' => $r->user()->id, 'event_id' => $event->id, 'reference' => 'ORD-'.strtoupper(Str::random(10)), 'total' => (float) $type->price * $d['quantity'], 'payment_method' => $d['payment_method'], 'status' => 'pending']);
-            $payment = TicketPayment::create(['ticket_order_id' => $order->id, 'reference' => 'TPAY-'.strtoupper(Str::random(12)), 'provider' => $d['payment_method'], 'provider_reference' => null, 'amount' => $order->total, 'currency' => 'XOF', 'status' => 'initiated', 'paid_at' => null, 'metadata' => ['mode' => $sandbox ? 'sandbox' : 'provider', 'quantity' => $d['quantity'], 'ticket_type_id' => $type->id]]);
+            $payment = TicketPayment::create(['ticket_order_id' => $order->id, 'reference' => 'TPAY-'.strtoupper(Str::random(12)), 'provider' => $d['payment_method'], 'provider_reference' => null, 'amount' => $order->total, 'currency' => 'XOF', 'status' => 'initiated', 'paid_at' => null, 'metadata' => ['quantity' => $d['quantity'], 'ticket_type_id' => $type->id]]);
             if ($paid) {
-                $this->ticketPayments->confirm($payment, 'SANDBOX-'.strtoupper(Str::random(10)));
+                $this->ticketPayments->confirm($payment, 'FREE-'.$order->reference);
             }
 
-            return ApiResponse::success($order->fresh(['payment', 'tickets.ticketType', 'event']), $paid ? 'Paiement confirmé et billets générés.' : 'Paiement initialisé. Confirmez-le auprès du prestataire pour recevoir vos billets.', 201);
+            $transaction = $paid
+                ? null
+                : $this->kkiapayPayments->createIntent($payment, $r->user(), (float) $order->total);
+            $data = $order->fresh(['payment.kkiapayTransaction', 'tickets.ticketType', 'event'])->toArray();
+            $data['checkout'] = $transaction === null ? null : $this->kkiapayPayments->checkout($transaction);
+
+            return ApiResponse::success($data, $paid ? 'Billets gratuits générés.' : 'Commande créée. Finalisez le paiement avec KKiaPay.', 201);
         });
-    }
-
-    public function paymentWebhook(Request $r)
-    {
-        $secret = (string) config('services.vimmo_event_payments.webhook_secret');
-        abort_if($secret === '', 503, 'Le webhook de paiement n’est pas configuré.');
-        $signature = (string) $r->header('X-Vimmo-Signature');
-        abort_unless(hash_equals(hash_hmac('sha256', $r->getContent(), $secret), $signature), 401, 'Signature de paiement invalide.');
-        $data = $r->validate([
-            'payment_reference' => 'required|string|exists:ticket_payments,reference',
-            'provider_reference' => 'nullable|string|max:255',
-            'status' => 'required|in:paid,failed',
-        ]);
-        $payment = TicketPayment::query()->where('reference', $data['payment_reference'])->firstOrFail();
-        $payment = $data['status'] === 'paid'
-            ? $this->ticketPayments->confirm($payment, $data['provider_reference'] ?? null)
-            : $this->ticketPayments->fail($payment, $data['provider_reference'] ?? null);
-
-        return ApiResponse::success($payment, 'Paiement traité.');
     }
 
     public function tickets(Request $r)
     {
-        return ApiResponse::success(TicketOrder::with(['payment', 'tickets.ticketType', 'event'])->where('buyer_id', $r->user()->id)->latest()->get());
+        return ApiResponse::success(TicketOrder::with(['payment.kkiapayTransaction', 'tickets.ticketType', 'event'])->where('buyer_id', $r->user()->id)->latest()->get());
     }
 
     public function cancelOrder(Request $r, TicketOrder $order)
