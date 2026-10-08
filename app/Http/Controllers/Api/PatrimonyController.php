@@ -140,7 +140,7 @@ class PatrimonyController extends Controller
     {
         $this->authorizeMediaAccess($request, $media);
         abort_unless(
-            $media->collection === 'gallery' && str_starts_with((string) $media->mime_type, 'image/'),
+            str_starts_with((string) $media->mime_type, 'image/'),
             404,
             'Image introuvable.',
         );

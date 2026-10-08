@@ -8,6 +8,7 @@ use App\Models\Inspection;
 use App\Models\LeaseContract;
 use App\Models\Listing;
 use App\Models\MaintenanceRequest;
+use App\Models\Media;
 use App\Models\Receipt;
 use App\Models\RentSchedule;
 use App\Models\TicketType;
@@ -145,6 +146,56 @@ class ExtendedFlowsApiTest extends TestCase
         $this->actingAs($tenant)->postJson('/api/maintenance/'.$maintenance->id.'/comments', ['comment' => 'Nouvelle précision'])->assertCreated();
         $other = User::where('role', 'tenant')->whereKeyNot($tenant->id)->firstOrFail();
         $this->actingAs($other)->getJson('/api/maintenance/'.$maintenance->id)->assertForbidden();
+    }
+
+    public function test_owner_status_update_sends_its_message_to_the_tenant(): void
+    {
+        $this->seed();
+        $maintenance = MaintenanceRequest::with('unit.property')->firstOrFail();
+        $owner = User::findOrFail($maintenance->unit->property->owner_id);
+
+        $this->actingAs($owner)->patchJson('/api/maintenance/'.$maintenance->id.'/status', [
+            'status' => 'processing',
+            'owner_message' => 'Un technicien vous contactera dans la journée.',
+        ])->assertOk()
+            ->assertJsonPath('data.status', 'processing')
+            ->assertJsonFragment([
+                'comment' => 'Un technicien vous contactera dans la journée.',
+            ]);
+
+        $this->assertDatabaseHas('maintenance_comments', [
+            'maintenance_request_id' => $maintenance->id,
+            'user_id' => $owner->id,
+            'comment' => 'Un technicien vous contactera dans la journée.',
+        ]);
+        $this->assertDatabaseHas('notifications', [
+            'user_id' => $maintenance->reported_by,
+            'type' => 'maintenance',
+        ]);
+    }
+
+    public function test_owner_can_preview_a_tenant_complaint_image(): void
+    {
+        $this->seed();
+        Storage::fake('private');
+        Storage::disk('private')->put('maintenance/fuite.jpg', 'image-content');
+        $maintenance = MaintenanceRequest::with('unit.property')->firstOrFail();
+        $owner = User::findOrFail($maintenance->unit->property->owner_id);
+        $media = Media::create([
+            'user_id' => $maintenance->reported_by,
+            'mediable_type' => MaintenanceRequest::class,
+            'mediable_id' => $maintenance->id,
+            'collection' => 'evidence',
+            'disk' => 'private',
+            'path' => 'maintenance/fuite.jpg',
+            'mime_type' => 'image/jpeg',
+            'size' => 13,
+            'metadata' => ['original_name' => 'fuite.jpg'],
+        ]);
+
+        $this->actingAs($owner)->get('/api/media/'.$media->id.'/preview')
+            ->assertOk()
+            ->assertHeader('content-type', 'image/jpeg');
     }
 
     public function test_owner_can_reject_a_maintenance_request_with_a_reason(): void

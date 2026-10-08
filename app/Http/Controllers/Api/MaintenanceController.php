@@ -59,15 +59,51 @@ class MaintenanceController extends Controller
     public function status(Request $r, MaintenanceRequest $maintenance)
     {
         abort_unless($maintenance->unit->property->owner_id === $r->user()->id, 403);
-        $d = $r->validate(['status' => 'required|in:received,processing,scheduled,resolved,closed', 'scheduled_at' => 'nullable|required_if:status,scheduled|date|after:now']);
-        $maintenance->update([
-            ...$d,
-            'rejection_reason' => null,
-            'rejected_at' => null,
+        $data = $r->validate([
+            'status' => 'required|in:received,processing,scheduled,resolved,closed',
+            'scheduled_at' => 'nullable|required_if:status,scheduled|date|after:now',
+            'owner_message' => 'nullable|string|max:3000',
         ]);
-        $this->notify($maintenance->reported_by, 'maintenance', 'Intervention mise à jour', 'Votre réclamation « '.$maintenance->title.' » est maintenant : '.$d['status'], ['maintenance_id' => $maintenance->id]);
+        $ownerMessage = trim((string) ($data['owner_message'] ?? ''));
+        unset($data['owner_message']);
+        $statusLabel = match ($data['status']) {
+            'received' => 'reçue',
+            'processing' => 'prise en charge',
+            'scheduled' => 'planifiée',
+            'resolved' => 'résolue',
+            'closed' => 'clôturée',
+        };
 
-        return ApiResponse::success($maintenance->fresh(['comments', 'media']), 'Intervention mise à jour.');
+        DB::transaction(function () use ($r, $maintenance, $data, $ownerMessage, $statusLabel): void {
+            $maintenance->update([
+                ...$data,
+                'rejection_reason' => null,
+                'rejected_at' => null,
+            ]);
+            if ($ownerMessage !== '') {
+                MaintenanceComment::create([
+                    'comment' => $ownerMessage,
+                    'maintenance_request_id' => $maintenance->id,
+                    'user_id' => $r->user()->id,
+                ]);
+            }
+            $message = 'Votre réclamation « '.$maintenance->title.' » est '.$statusLabel.'.';
+            if ($ownerMessage !== '') {
+                $message .= ' Message du propriétaire : '.$ownerMessage;
+            }
+            $this->notify(
+                $maintenance->reported_by,
+                'maintenance',
+                'Intervention mise à jour',
+                $message,
+                ['maintenance_id' => $maintenance->id],
+            );
+        });
+
+        return ApiResponse::success(
+            $maintenance->fresh(['unit.property', 'reporter:id,name,email,phone', 'comments.user:id,name', 'media']),
+            'Intervention mise à jour.',
+        );
     }
 
     public function reject(Request $request, MaintenanceRequest $maintenance)
