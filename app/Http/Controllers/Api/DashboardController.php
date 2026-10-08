@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Models\Payment;
 use App\Support\ApiResponse;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
@@ -70,6 +71,15 @@ class DashboardController extends Controller
                 ->first();
             $contractId = $contract?->id;
             $unitId = $contract?->unit_id;
+            $visiblePayments = DB::table('payments')
+                ->where('lease_contract_id', $contractId)
+                ->whereNotExists(function ($query) {
+                    $query->selectRaw('1')
+                        ->from('kkiapay_transactions')
+                        ->whereColumn('kkiapay_transactions.payable_id', 'payments.id')
+                        ->where('kkiapay_transactions.payable_type', Payment::class)
+                        ->whereIn('kkiapay_transactions.status', ['failed', 'cancelled']);
+                });
             $nextRent = $contractId ? DB::table('rent_schedules')
                 ->where('lease_contract_id', $contractId)
                 ->whereDate('due_date', '>=', $contract->starts_at)
@@ -96,10 +106,10 @@ class DashboardController extends Controller
                 'next_rent' => $nextRent,
                 'last_payment' => $lastPayment,
                 'rent_paid' => (float) DB::table('payments')->join('lease_contracts', 'lease_contracts.id', '=', 'payments.lease_contract_id')->where('lease_contracts.tenant_id', $u->id)->where('payments.status', 'confirmed')->sum('payments.amount'),
-                'pending_payments' => $contractId ? DB::table('payments')->where('lease_contract_id', $contractId)->where('status', 'pending')->count() : 0,
+                'pending_payments' => $contractId ? (clone $visiblePayments)->where('status', 'pending')->count() : 0,
                 'receipts' => $contractId ? DB::table('receipts')->join('payments', 'payments.id', '=', 'receipts.payment_id')->where('payments.lease_contract_id', $contractId)->count() : 0,
                 'documents' => $contractId ? DB::table('media')->where('mediable_type', 'App\\Models\\LeaseContract')->where('mediable_id', $contractId)->count() + DB::table('receipts')->join('payments', 'payments.id', '=', 'receipts.payment_id')->where('payments.lease_contract_id', $contractId)->count() : 0,
-                'payments' => $contractId ? DB::table('payments')->where('lease_contract_id', $contractId)->count() : 0,
+                'payments' => $contractId ? (clone $visiblePayments)->count() : 0,
                 'pending_inspections' => $contractId ? DB::table('inspections')->where('lease_contract_id', $contractId)->where('status', '!=', 'completed')->count() : 0,
                 'open_maintenance' => $unitId ? DB::table('maintenance_requests')->where('unit_id', $unitId)->whereNotIn('status', ['resolved', 'closed'])->count() : 0,
             ];

@@ -89,7 +89,18 @@ class EventController extends Controller
     {
         $events = Event::where('organizer_id', $r->user()->id)->pluck('id');
 
-        return ApiResponse::success(TicketOrder::with(['buyer:id,name,email,phone', 'event:id,title', 'tickets.ticketType'])->whereIn('event_id', $events)->latest()->get());
+        return ApiResponse::success(
+            TicketOrder::with([
+                'buyer:id,name,email,phone',
+                'event:id,title',
+                'payment.kkiapayTransaction',
+                'tickets.ticketType',
+            ])
+                ->whereIn('event_id', $events)
+                ->whereHas('payment', fn ($query) => $query->where('status', '!=', 'failed'))
+                ->latest()
+                ->get()
+        );
     }
 
     public function store(Request $r)
@@ -210,7 +221,7 @@ class EventController extends Controller
             'cover' => 'nullable|image|max:10240',
             'ticket_types' => 'required|array|min:1',
             'ticket_types.*.type' => 'required|string|max:100|distinct',
-            'ticket_types.*.price' => 'required|numeric|min:0',
+            'ticket_types.*.price' => 'required|numeric|gt:0',
             'ticket_types.*.capacity' => 'required|integer|min:1',
             'schedules' => 'required|array|min:1',
             'schedules.*.date' => 'required|date|distinct',
@@ -271,7 +282,13 @@ class EventController extends Controller
 
     public function tickets(Request $r)
     {
-        return ApiResponse::success(TicketOrder::with(['payment.kkiapayTransaction', 'tickets.ticketType', 'event'])->where('buyer_id', $r->user()->id)->latest()->get());
+        return ApiResponse::success(
+            TicketOrder::with(['payment.kkiapayTransaction', 'tickets.ticketType', 'event'])
+                ->where('buyer_id', $r->user()->id)
+                ->whereHas('payment', fn ($query) => $query->where('status', '!=', 'failed'))
+                ->latest()
+                ->get()
+        );
     }
 
     public function cancelOrder(Request $r, TicketOrder $order)

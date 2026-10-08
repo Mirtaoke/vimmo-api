@@ -23,6 +23,12 @@ return [
     'image' => 'Le champ :attribute doit être une image.',
     'in' => 'La valeur choisie pour :attribute est invalide.',
     'integer' => 'Le champ :attribute doit être un nombre entier.',
+    'gt' => [
+        'numeric' => 'Le champ :attribute doit être supérieur à :value.',
+        'file' => 'Le fichier :attribute doit dépasser :value kilo-octets.',
+        'string' => 'Le champ :attribute doit contenir plus de :value caractères.',
+        'array' => 'Le champ :attribute doit contenir plus de :value éléments.',
+    ],
     'max' => [
         'numeric' => 'Le champ :attribute ne doit pas dépasser :max.',
         'file' => 'Le fichier :attribute ne doit pas dépasser :max kilo-octets.',

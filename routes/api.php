@@ -107,6 +107,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('/kkiapay/transactions/{kkiapayTransaction}/verify', [KkiapayPaymentController::class, 'verify'])->middleware('throttle:20,1');
     Route::post('/kkiapay/transactions/{kkiapayTransaction}/cancel', [KkiapayPaymentController::class, 'cancel'])->middleware('throttle:20,1');
     Route::post('/payments', [RentalController::class, 'pay'])->middleware('role:tenant');
+    Route::post('/payments/{payment}/proof', [RentalController::class, 'attachProof'])->middleware('role:tenant');
     Route::post('/payments/record', [RentalController::class, 'recordPayment'])->middleware('role:owner');
     Route::get('/payments/{payment}/proof', [RentalController::class, 'downloadProof']);
     Route::get('/payments/{payment}/proof/chunks', [RentalController::class, 'downloadProofChunk']);

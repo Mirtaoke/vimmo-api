@@ -6,6 +6,7 @@ use App\Models\LeaseContract;
 use App\Models\Media;
 use App\Models\Payment;
 use App\Models\Receipt;
+use App\Models\RentSchedule;
 use App\Models\Ticket;
 use App\Models\Unit;
 use App\Models\User;
@@ -82,6 +83,37 @@ class BusinessFlowsApiTest extends TestCase
         $this->actingAs($tenant)->getJson('/api/dashboard')
             ->assertOk()
             ->assertJsonPath('data.payments', $before + 1);
+    }
+
+    public function test_tenant_declares_cash_without_proof_and_other_manual_modes_are_rejected(): void
+    {
+        $this->seed();
+        $tenant = User::where('role', 'tenant')->firstOrFail();
+        $contract = LeaseContract::where('tenant_id', $tenant->id)
+            ->where('status', 'active')
+            ->firstOrFail();
+        $schedule = RentSchedule::where('lease_contract_id', $contract->id)
+            ->where('status', 'upcoming')
+            ->firstOrFail();
+
+        $this->actingAs($tenant)->postJson('/api/payments', [
+            'lease_contract_id' => $contract->id,
+            'schedule_ids' => [$schedule->id],
+            'method' => 'cash',
+        ])->assertCreated()
+            ->assertJsonPath('data.method', 'cash')
+            ->assertJsonPath('data.proof_path', null);
+
+        $otherSchedule = RentSchedule::where('lease_contract_id', $contract->id)
+            ->where('status', 'upcoming')
+            ->whereKeyNot($schedule->id)
+            ->firstOrFail();
+        $this->actingAs($tenant)->postJson('/api/payments', [
+            'lease_contract_id' => $contract->id,
+            'schedule_ids' => [$otherSchedule->id],
+            'method' => 'mtn_momo',
+        ])->assertUnprocessable()
+            ->assertJsonValidationErrors('method');
     }
 
     public function test_new_tenant_dashboard_has_no_fictitious_rental_data(): void

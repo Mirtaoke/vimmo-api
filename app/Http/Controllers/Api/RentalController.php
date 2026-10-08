@@ -216,14 +216,15 @@ class RentalController extends Controller
             'schedules',
             'receipt',
             'kkiapayTransaction',
-        ])->whereHas('contract', fn ($x) => $x->where($r->user()->role === 'owner' ? 'owner_id' : 'tenant_id', $r->user()->id));
+        ])->visibleToUsers()
+            ->whereHas('contract', fn ($x) => $x->where($r->user()->role === 'owner' ? 'owner_id' : 'tenant_id', $r->user()->id));
 
         return ApiResponse::success($q->latest()->get());
     }
 
     public function pay(Request $r)
     {
-        $d = $r->validate(['lease_contract_id' => 'required|exists:lease_contracts,id', 'schedule_ids' => 'required|array|min:1', 'schedule_ids.*' => 'exists:rent_schedules,id', 'amount' => 'nullable|numeric|min:1', 'method' => 'required|in:cash,mtn_momo,moov_money,bank_transfer,cheque,other', 'proof' => 'required|file|mimes:jpg,jpeg,png,pdf|max:10240', 'note' => 'nullable|string']);
+        $d = $r->validate(['lease_contract_id' => 'required|exists:lease_contracts,id', 'schedule_ids' => 'required|array|min:1', 'schedule_ids.*' => 'exists:rent_schedules,id', 'amount' => 'nullable|numeric|min:1', 'method' => 'required|in:cash', 'proof' => 'prohibited', 'note' => 'nullable|string']);
         $contract = LeaseContract::findOrFail($d['lease_contract_id']);
         abort_unless($contract->tenant_id === $r->user()->id, 403);
         $schedules = RentSchedule::where('lease_contract_id', $contract->id)->whereIn('id', $d['schedule_ids'])->orderBy('due_date')->get();
@@ -237,25 +238,48 @@ class RentalController extends Controller
         $remaining = $schedules->sum(fn ($s) => max(0, (float) $s->amount - (float) $s->paid_amount));
         $amount = isset($d['amount']) ? (float) $d['amount'] : $remaining;
         abort_if($amount > $remaining, 422, 'Le montant dépasse le solde des échéances sélectionnées.');
-        $path = $r->file('proof')->store('payment-proofs', 'private');
-
-        $payment = $this->createPayment($contract, $schedules, $amount, $d['method'], $r->user()->id, $path, $d['note'] ?? null);
+        $payment = $this->createPayment($contract, $schedules, $amount, $d['method'], $r->user()->id, null, $d['note'] ?? null);
         DB::table('notifications')->insert(['user_id' => $contract->owner_id, 'type' => 'payment', 'title' => 'Paiement à vérifier', 'body' => 'Le locataire a déclaré un paiement de '.number_format($amount, 0, ',', ' ').' FCFA.', 'data' => json_encode(['payment_id' => $payment->id]), 'created_at' => now(), 'updated_at' => now()]);
 
         return ApiResponse::success($payment, 'Paiement envoyé pour confirmation.', 201);
     }
 
+    public function attachProof(Request $request, Payment $payment)
+    {
+        abort_unless($payment->payer_id === $request->user()->id, 403);
+        abort_unless($payment->status === 'confirmed', 422, 'Le paiement doit être confirmé avant l’ajout d’une capture.');
+        abort_unless(
+            $payment->kkiapayTransaction()->where('status', 'paid')->exists(),
+            422,
+            'Une capture facultative est réservée aux paiements KKiaPay.',
+        );
+        $request->validate([
+            'proof' => ['required', 'image', 'mimes:jpg,jpeg,png,webp', 'max:10240'],
+        ]);
+
+        $path = $request->file('proof')->store('payment-proofs', 'private');
+        $previousPath = $payment->proof_path;
+        $payment->update(['proof_path' => $path]);
+        if ($previousPath && $previousPath !== $path) {
+            Storage::disk('private')->delete($previousPath);
+        }
+
+        return ApiResponse::success(
+            $payment->fresh(['contract.unit.property', 'schedules', 'receipt', 'kkiapayTransaction']),
+            'Capture ajoutée au paiement KKiaPay.',
+        );
+    }
+
     public function recordPayment(Request $r, PaymentService $service)
     {
-        $d = $r->validate(['lease_contract_id' => 'required|exists:lease_contracts,id', 'schedule_ids' => 'required|array|min:1', 'schedule_ids.*' => 'exists:rent_schedules,id', 'amount' => 'required|numeric|min:1', 'method' => 'required|in:cash,mtn_momo,moov_money,bank_transfer,cheque,other', 'proof' => 'nullable|file|mimes:jpg,jpeg,png,pdf|max:10240', 'note' => 'nullable|string']);
+        $d = $r->validate(['lease_contract_id' => 'required|exists:lease_contracts,id', 'schedule_ids' => 'required|array|min:1', 'schedule_ids.*' => 'exists:rent_schedules,id', 'amount' => 'required|numeric|min:1', 'method' => 'required|in:cash', 'proof' => 'prohibited', 'note' => 'nullable|string']);
         $contract = LeaseContract::findOrFail($d['lease_contract_id']);
         abort_unless($contract->owner_id === $r->user()->id, 403);
         $schedules = RentSchedule::where('lease_contract_id', $contract->id)->whereIn('id', $d['schedule_ids'])->orderBy('due_date')->get();
         abort_unless($schedules->count() === count(array_unique($d['schedule_ids'])), 422, 'Certaines échéances ne correspondent pas au contrat.');
         $remaining = $schedules->sum(fn ($s) => max(0, (float) $s->amount - (float) $s->paid_amount));
         abort_if((float) $d['amount'] > $remaining, 422, 'Le montant dépasse le solde des échéances sélectionnées.');
-        $path = $r->hasFile('proof') ? $r->file('proof')->store('payment-proofs', 'private') : null;
-        $payment = $this->createPayment($contract, $schedules, (float) $d['amount'], $d['method'], $contract->tenant_id, $path, $d['note'] ?? 'Paiement enregistré par le propriétaire');
+        $payment = $this->createPayment($contract, $schedules, (float) $d['amount'], $d['method'], $contract->tenant_id, null, $d['note'] ?? 'Paiement en espèces enregistré par le propriétaire');
 
         return ApiResponse::success($service->confirm($payment, $r->user()->id), 'Paiement enregistré, ventilé et quittance générée.', 201);
     }

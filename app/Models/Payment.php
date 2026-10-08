@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\MorphOne;
 
@@ -32,5 +33,13 @@ class Payment extends Model
     public function kkiapayTransaction(): MorphOne
     {
         return $this->morphOne(KkiapayTransaction::class, 'payable');
+    }
+
+    public function scopeVisibleToUsers(Builder $query): void
+    {
+        $query->whereDoesntHave(
+            'kkiapayTransaction',
+            fn (Builder $transaction) => $transaction->whereIn('status', ['failed', 'cancelled']),
+        );
     }
 }

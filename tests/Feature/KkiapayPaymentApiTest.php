@@ -7,7 +7,9 @@ use App\Models\Payment;
 use App\Models\RentSchedule;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Storage;
 use Tests\TestCase;
 
 class KkiapayPaymentApiTest extends TestCase
@@ -30,6 +32,7 @@ class KkiapayPaymentApiTest extends TestCase
 
     public function test_tenant_payment_is_confirmed_only_after_server_verification(): void
     {
+        Storage::fake('private');
         [$tenant, , , $checkout, $payment] = $this->createRentIntent();
 
         Http::preventStrayRequests();
@@ -59,6 +62,16 @@ class KkiapayPaymentApiTest extends TestCase
         ]);
         $this->assertDatabaseHas('payments', ['status' => 'confirmed']);
         $this->assertDatabaseHas('receipts', ['payment_id' => $payment->id]);
+
+        $this->actingAs($tenant)
+            ->post('/api/payments/'.$payment->id.'/proof', [
+                'proof' => UploadedFile::fake()->image('capture-kkiapay.jpg'),
+            ], ['Accept' => 'application/json'])
+            ->assertOk()
+            ->assertJsonPath('data.id', $payment->id);
+        $proofPath = $payment->fresh()->proof_path;
+        $this->assertNotNull($proofPath);
+        Storage::disk('private')->assertExists($proofPath);
 
         Http::assertSent(fn ($request): bool => $request->hasHeader('X-API-KEY', 'public-test')
             && $request->hasHeader('X-PRIVATE-KEY', 'private-test')
@@ -117,6 +130,45 @@ class KkiapayPaymentApiTest extends TestCase
             ->assertJsonPath('data.resource.status', 'pending');
 
         $this->assertDatabaseMissing('receipts', ['payment_id' => $payment->id]);
+    }
+
+    public function test_failed_kkiapay_attempt_is_hidden_from_history_and_dashboard(): void
+    {
+        [$tenant, , , $checkout, $payment] = $this->createRentIntent();
+
+        Http::fake([
+            'https://api-sandbox.kkiapay.me/api/v1/transactions/status' => Http::response([
+                'status' => 'FAILED',
+                'isPaymentSucces' => false,
+                'transactionId' => 'KKP-FAILED',
+                'amount' => $checkout['amount'],
+                'partnerId' => $checkout['partner_id'],
+                'failureMessage' => 'Paiement refusé.',
+            ]),
+        ]);
+
+        $this->actingAs($tenant)
+            ->postJson('/api/kkiapay/transactions/'.$checkout['id'].'/verify', [
+                'transaction_id' => 'KKP-FAILED',
+            ])
+            ->assertUnprocessable();
+
+        $this->assertDatabaseHas('payments', [
+            'id' => $payment->id,
+            'status' => 'rejected',
+        ]);
+        $this->actingAs($tenant)
+            ->getJson('/api/payments')
+            ->assertOk()
+            ->assertJsonMissing(['id' => $payment->id]);
+        $visibleCount = Payment::query()
+            ->visibleToUsers()
+            ->where('lease_contract_id', $payment->lease_contract_id)
+            ->count();
+        $this->actingAs($tenant)
+            ->getJson('/api/dashboard')
+            ->assertOk()
+            ->assertJsonPath('data.payments', $visibleCount);
     }
 
     public function test_a_user_cannot_verify_another_users_payment(): void

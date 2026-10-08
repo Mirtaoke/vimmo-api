@@ -90,6 +90,40 @@ class EventLifecycleApiTest extends TestCase
             ->assertJsonValidationErrors(['schedules.0.date', 'schedules.0.end_time']);
     }
 
+    public function test_ticket_price_must_be_strictly_greater_than_zero(): void
+    {
+        [$organizer, , $event] = $this->eventContext();
+        $payload = $this->eventPayload($event);
+        $payload['ticket_types'][0]['price'] = 0;
+
+        $this->actingAs($organizer)
+            ->putJson('/api/organizer/events/'.$event->id, $payload)
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors(['ticket_types.0.price']);
+    }
+
+    public function test_cancelled_kkiapay_attempt_is_hidden_from_ticket_and_sales_histories(): void
+    {
+        [$organizer, $buyer, $event, $ticketType] = $this->eventContext();
+
+        $order = $this->actingAs($buyer)->postJson('/api/events/'.$event->id.'/orders', [
+            'ticket_type_id' => $ticketType->id,
+            'quantity' => 1,
+            'payment_method' => 'kkiapay',
+        ])->assertCreated();
+
+        $this->actingAs($buyer)
+            ->postJson('/api/kkiapay/transactions/'.$order->json('data.checkout.id').'/cancel')
+            ->assertOk();
+
+        $this->actingAs($buyer)->getJson('/api/tickets')
+            ->assertOk()
+            ->assertJsonCount(0, 'data');
+        $this->actingAs($organizer)->getJson('/api/organizer/sales')
+            ->assertOk()
+            ->assertJsonCount(0, 'data');
+    }
+
     public function test_paid_participant_is_notified_when_event_information_changes(): void
     {
         [$organizer, $buyer, $event, $ticketType] = $this->eventContext();
