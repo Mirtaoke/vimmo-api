@@ -64,6 +64,15 @@ class MaintenanceController extends Controller
             'scheduled_at' => 'nullable|required_if:status,scheduled|date|after:now',
             'owner_message' => 'nullable|string|max:3000',
         ]);
+        if ($maintenance->status === 'closed') {
+            return ApiResponse::error('Cette réclamation est déjà clôturée.', 422);
+        }
+        if ($data['status'] === 'closed' && $maintenance->status !== 'resolved') {
+            return ApiResponse::error('Une réclamation doit être résolue avant sa clôture.', 422);
+        }
+        if ($maintenance->status === 'resolved' && ! in_array($data['status'], ['resolved', 'closed'], true)) {
+            return ApiResponse::error('Une réclamation résolue peut seulement être clôturée.', 422);
+        }
         $ownerMessage = trim((string) ($data['owner_message'] ?? ''));
         unset($data['owner_message']);
         $statusLabel = match ($data['status']) {
@@ -143,6 +152,9 @@ class MaintenanceController extends Controller
             'status' => 'required|in:received,processing,resolved',
             'availability_notes' => 'nullable|string|max:1000',
         ]);
+        if ($maintenance->status === 'closed') {
+            return ApiResponse::error('Cette réclamation est déjà clôturée.', 422);
+        }
         if ($d['status'] === 'received' && ! in_array($maintenance->status, ['new', 'received'], true)) {
             return ApiResponse::error('Un signalement commencé ne peut plus revenir en attente.', 422);
         }

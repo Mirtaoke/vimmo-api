@@ -174,6 +174,33 @@ class ExtendedFlowsApiTest extends TestCase
         ]);
     }
 
+    public function test_a_complaint_must_be_resolved_before_the_owner_closes_it(): void
+    {
+        $this->seed();
+        $maintenance = MaintenanceRequest::with('unit.property')->firstOrFail();
+        $owner = User::findOrFail($maintenance->unit->property->owner_id);
+
+        $this->actingAs($owner)
+            ->patchJson('/api/maintenance/'.$maintenance->id.'/status', ['status' => 'closed'])
+            ->assertUnprocessable()
+            ->assertJsonPath('message', 'Une réclamation doit être résolue avant sa clôture.');
+
+        $this->actingAs($owner)
+            ->patchJson('/api/maintenance/'.$maintenance->id.'/status', ['status' => 'resolved'])
+            ->assertOk()
+            ->assertJsonPath('data.status', 'resolved');
+
+        $this->actingAs($owner)
+            ->patchJson('/api/maintenance/'.$maintenance->id.'/status', ['status' => 'closed'])
+            ->assertOk()
+            ->assertJsonPath('data.status', 'closed');
+
+        $this->actingAs($owner)
+            ->patchJson('/api/maintenance/'.$maintenance->id.'/status', ['status' => 'processing'])
+            ->assertUnprocessable()
+            ->assertJsonPath('message', 'Cette réclamation est déjà clôturée.');
+    }
+
     public function test_owner_can_preview_a_tenant_complaint_image(): void
     {
         $this->seed();
