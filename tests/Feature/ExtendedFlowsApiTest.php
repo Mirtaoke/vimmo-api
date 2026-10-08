@@ -62,6 +62,34 @@ class ExtendedFlowsApiTest extends TestCase
         $this->actingAs($owner)->patchJson('/api/rental-applications/'.$application['id'].'/status', ['status' => 'accepted'])->assertOk()->assertJsonPath('data.status', 'accepted');
     }
 
+    public function test_owner_lists_and_dashboard_include_new_real_estate_requests(): void
+    {
+        $this->seed();
+        $seeker = User::where('email', 'ruth.chercheur@vimmo.bj')->firstOrFail();
+        $listing = Listing::where('status', 'published')
+            ->whereHas('unit', fn ($query) => $query->where('status', 'available'))
+            ->firstOrFail();
+        $owner = User::findOrFail($listing->owner_id);
+
+        $visitId = $this->actingAs($seeker)->postJson('/api/listings/'.$listing->id.'/visits', [
+            'requested_at' => now()->addDays(2)->toIso8601String(),
+            'comment' => 'Je souhaite visiter ce logement.',
+        ])->assertCreated()->json('data.id');
+        $applicationId = $this->actingAs($seeker)->postJson('/api/listings/'.$listing->id.'/applications', [
+            'message' => 'Ma candidature est complète.',
+        ])->assertCreated()->json('data.id');
+
+        $this->actingAs($owner)->getJson('/api/visits')
+            ->assertOk()
+            ->assertJsonFragment(['id' => $visitId, 'requester_email' => $seeker->email]);
+        $this->actingAs($owner)->getJson('/api/rental-applications')
+            ->assertOk()
+            ->assertJsonFragment(['id' => $applicationId, 'applicant_id' => $seeker->id]);
+        $dashboard = $this->actingAs($owner)->getJson('/api/dashboard')->assertOk();
+        $this->assertGreaterThanOrEqual(1, $dashboard->json('data.pending_visits'));
+        $this->assertGreaterThanOrEqual(1, $dashboard->json('data.pending_applications'));
+    }
+
     public function test_owner_can_confirm_a_visit_with_a_new_schedule_and_message(): void
     {
         $this->seed();
@@ -161,6 +189,36 @@ class ExtendedFlowsApiTest extends TestCase
         $this->actingAs($participant)->getJson('/api/conversations')
             ->assertOk()
             ->assertJsonPath('data.0.latest_message.body', 'Réponse la plus récente du propriétaire');
+    }
+
+    public function test_owner_receives_a_message_started_by_a_seeker(): void
+    {
+        $this->seed();
+        $listing = Listing::with('unit')
+            ->where('status', 'published')
+            ->firstOrFail();
+        $seeker = User::where('role', 'seeker')->firstOrFail();
+        $owner = User::findOrFail($listing->owner_id);
+        $conversationId = $this->actingAs($seeker)->postJson('/api/conversations', [
+            'participant_id' => $owner->id,
+            'listing_id' => $listing->id,
+            'unit_id' => $listing->unit_id,
+            'subject' => $listing->title,
+        ])->assertSuccessful()->json('data.id');
+
+        $this->actingAs($seeker)->postJson('/api/conversations/'.$conversationId.'/messages', [
+            'body' => 'Bonjour, ce logement est-il toujours disponible ?',
+        ])->assertCreated();
+
+        $this->actingAs($owner)->getJson('/api/conversations')
+            ->assertOk()
+            ->assertJsonFragment([
+                'id' => $conversationId,
+                'body' => 'Bonjour, ce logement est-il toujours disponible ?',
+            ]);
+        $this->actingAs($owner)->getJson('/api/conversations/'.$conversationId.'/messages')
+            ->assertOk()
+            ->assertJsonFragment(['body' => 'Bonjour, ce logement est-il toujours disponible ?']);
     }
 
     public function test_tenant_can_edit_or_delete_only_a_pending_maintenance_request(): void

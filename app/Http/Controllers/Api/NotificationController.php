@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Support\ApiResponse;
+use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 
@@ -11,7 +12,24 @@ class NotificationController extends Controller
 {
     public function index(Request $r)
     {
-        return ApiResponse::success(DB::table('notifications')->where('user_id', $r->user()->id)->latest()->paginate(30));
+        $notifications = DB::table('notifications')
+            ->where('user_id', $r->user()->id)
+            ->latest()
+            ->paginate(30)
+            ->through(function (object $notification): object {
+                foreach (['created_at', 'updated_at', 'read_at'] as $field) {
+                    if ($notification->{$field} !== null) {
+                        $notification->{$field} = Carbon::parse(
+                            $notification->{$field},
+                            config('app.timezone'),
+                        )->utc()->toISOString();
+                    }
+                }
+
+                return $notification;
+            });
+
+        return ApiResponse::success($notifications);
     }
 
     public function read(Request $r, int $id)

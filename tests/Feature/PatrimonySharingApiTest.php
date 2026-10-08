@@ -135,6 +135,35 @@ class PatrimonySharingApiTest extends TestCase
             ->assertDownload('titre-de-propriete.pdf');
     }
 
+    public function test_owner_can_display_a_private_patrimony_photo_inline(): void
+    {
+        Storage::fake('private');
+        $owner = User::factory()->create(['role' => 'owner']);
+        $property = $this->privateProperty($owner);
+        Storage::disk('private')->put('vault/gallery/maison.jpg', 'image-test');
+        $media = Media::create([
+            'user_id' => $owner->id,
+            'mediable_type' => Property::class,
+            'mediable_id' => $property->id,
+            'collection' => 'gallery',
+            'label' => 'Façade',
+            'disk' => 'private',
+            'path' => 'vault/gallery/maison.jpg',
+            'mime_type' => 'image/jpeg',
+            'size' => 10,
+        ]);
+
+        $this->actingAs($owner)->get('/api/media/'.$media->id.'/preview')
+            ->assertOk()
+            ->assertHeader('content-type', 'image/jpeg')
+            ->assertHeader('content-disposition', 'inline')
+            ->assertContent('image-test');
+
+        $otherOwner = User::factory()->create(['role' => 'owner']);
+        $this->actingAs($otherOwner)->get('/api/media/'.$media->id.'/preview')
+            ->assertForbidden();
+    }
+
     private function privateProperty(User $owner): Property
     {
         return Property::create([

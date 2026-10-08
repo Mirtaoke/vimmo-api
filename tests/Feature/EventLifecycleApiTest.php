@@ -34,10 +34,11 @@ class EventLifecycleApiTest extends TestCase
             'type' => 'ticket_sale',
         ]);
 
-        $notificationId = (int) $this->actingAs($buyer)
+        $notifications = $this->actingAs($buyer)
             ->getJson('/api/notifications')
-            ->assertOk()
-            ->json('data.data.0.id');
+            ->assertOk();
+        $notificationId = (int) $notifications->json('data.data.0.id');
+        $this->assertStringEndsWith('Z', $notifications->json('data.data.0.created_at'));
         $this->actingAs($buyer)->deleteJson('/api/notifications/'.$notificationId)->assertOk();
         $this->assertDatabaseMissing('notifications', ['id' => $notificationId]);
         $this->assertDatabaseHas('ticket_orders', ['id' => $orderId, 'status' => 'paid']);

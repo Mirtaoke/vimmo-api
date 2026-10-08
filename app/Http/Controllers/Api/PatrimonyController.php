@@ -93,9 +93,16 @@ class PatrimonyController extends Controller
         $this->authorizeContribution($request, $property);
         $data = $request->validate(['images' => 'required|array|min:1|max:20', 'images.*' => 'required|image|max:15360', 'labels' => 'required|string']);
         $labels = explode('|', $data['labels']);
+        $property->media()
+            ->where('collection', 'gallery')
+            ->get()
+            ->each(function (Media $existing): void {
+                $metadata = is_array($existing->metadata) ? $existing->metadata : [];
+                $existing->update(['metadata' => [...$metadata, 'is_cover' => false]]);
+            });
         $media = [];
         foreach ($request->file('images', []) as $index => $image) {
-            $media[] = Media::create(['user_id' => $request->user()->id, 'mediable_type' => Property::class, 'mediable_id' => $property->id, 'collection' => 'gallery', 'label' => $labels[$index] ?? 'Photo', 'disk' => 'private', 'path' => $image->store('vault/gallery', 'private'), 'mime_type' => $image->getMimeType(), 'size' => $image->getSize()]);
+            $media[] = Media::create(['user_id' => $request->user()->id, 'mediable_type' => Property::class, 'mediable_id' => $property->id, 'collection' => 'gallery', 'label' => $labels[$index] ?? 'Photo', 'disk' => 'private', 'path' => $image->store('vault/gallery', 'private'), 'mime_type' => $image->getMimeType(), 'size' => $image->getSize(), 'metadata' => ['is_cover' => $index === 0]]);
         }
 
         return ApiResponse::success($media, 'Galerie patrimoniale enregistrée.', 201);
@@ -126,6 +133,28 @@ class PatrimonyController extends Controller
             'Content-Length' => (string) strlen($content),
             'Content-Disposition' => 'attachment; filename="'.$safeName.'"',
             'Cache-Control' => 'private, no-store, max-age=0',
+        ]);
+    }
+
+    public function preview(Request $request, Media $media)
+    {
+        $this->authorizeMediaAccess($request, $media);
+        abort_unless(
+            $media->collection === 'gallery' && str_starts_with((string) $media->mime_type, 'image/'),
+            404,
+            'Image introuvable.',
+        );
+
+        $disk = Storage::disk($media->disk);
+        abort_unless($disk->exists($media->path), 404, 'Image introuvable.');
+        $content = $disk->get($media->path);
+
+        return response($content, 200, [
+            'Content-Type' => $media->mime_type ?: 'image/jpeg',
+            'Content-Length' => (string) strlen($content),
+            'Content-Disposition' => 'inline',
+            'Cache-Control' => 'private, max-age=300',
+            'X-Content-Type-Options' => 'nosniff',
         ]);
     }
 
