@@ -158,6 +158,29 @@ class PatrimonyController extends Controller
         ]);
     }
 
+    public function stream(Request $request, Media $media)
+    {
+        $this->authorizeMediaAccess($request, $media);
+        abort_unless(
+            str_starts_with((string) $media->mime_type, 'video/'),
+            404,
+            'Vidéo introuvable.',
+        );
+
+        $disk = Storage::disk($media->disk);
+        abort_unless($disk->exists($media->path), 404, 'Vidéo introuvable.');
+        $name = $media->metadata['original_name'] ?? basename($media->path);
+        $safeName = str_replace(['"', "\r", "\n"], '', Str::ascii($name));
+
+        return response()->file($disk->path($media->path), [
+            'Content-Type' => $media->mime_type ?: 'video/mp4',
+            'Content-Disposition' => 'inline; filename="'.$safeName.'"',
+            'Accept-Ranges' => 'bytes',
+            'Cache-Control' => 'private, max-age=300',
+            'X-Content-Type-Options' => 'nosniff',
+        ]);
+    }
+
     public function downloadChunk(Request $request, Media $media)
     {
         $this->authorizeMediaAccess($request, $media);

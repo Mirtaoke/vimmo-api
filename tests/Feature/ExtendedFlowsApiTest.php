@@ -225,6 +225,37 @@ class ExtendedFlowsApiTest extends TestCase
             ->assertHeader('content-type', 'image/jpeg');
     }
 
+    public function test_owner_can_stream_a_tenant_complaint_video(): void
+    {
+        $this->seed();
+        Storage::fake('private');
+        Storage::disk('private')->put('maintenance/fuite.mp4', 'video-content');
+        $maintenance = MaintenanceRequest::with('unit.property')->firstOrFail();
+        $owner = User::findOrFail($maintenance->unit->property->owner_id);
+        $media = Media::create([
+            'user_id' => $maintenance->reported_by,
+            'mediable_type' => MaintenanceRequest::class,
+            'mediable_id' => $maintenance->id,
+            'collection' => 'evidence',
+            'disk' => 'private',
+            'path' => 'maintenance/fuite.mp4',
+            'mime_type' => 'video/mp4',
+            'size' => 13,
+            'metadata' => ['original_name' => 'fuite.mp4'],
+        ]);
+
+        $this->actingAs($owner)->get('/api/media/'.$media->id.'/stream')
+            ->assertOk()
+            ->assertHeader('content-type', 'video/mp4')
+            ->assertHeader('accept-ranges', 'bytes');
+
+        $this->actingAs($owner)
+            ->withHeader('Range', 'bytes=0-4')
+            ->get('/api/media/'.$media->id.'/stream')
+            ->assertStatus(206)
+            ->assertHeader('content-range', 'bytes 0-4/13');
+    }
+
     public function test_owner_can_reject_a_maintenance_request_with_a_reason(): void
     {
         $this->seed();

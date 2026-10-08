@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Mail\OneTimeCodeMail;
 use App\Models\User;
 use App\Support\ApiResponse;
 use Illuminate\Database\QueryException;
@@ -54,25 +55,22 @@ class AuthController extends Controller
 
         $otp = (string) random_int(100000, 999999);
         try {
-            DB::transaction(function () use ($data, $otp): void {
-                DB::table('pending_registrations')->updateOrInsert(
-                    ['email' => $data['email']],
-                    [
-                        'first_name' => $data['first_name'],
-                        'last_name' => $data['last_name'],
-                        'phone' => $data['phone'],
-                        'role' => $data['role'],
-                        'password' => Hash::make($data['password']),
-                        'otp_hash' => Hash::make($otp),
-                        'resend_count' => 0,
-                        'last_sent_at' => now(),
-                        'expires_at' => now()->addMinutes(10),
-                        'created_at' => now(),
-                        'updated_at' => now(),
-                    ]
-                );
-                $this->sendRegistrationOtp($data['email'], $data['first_name'], $otp);
-            });
+            DB::table('pending_registrations')->updateOrInsert(
+                ['email' => $data['email']],
+                [
+                    'first_name' => $data['first_name'],
+                    'last_name' => $data['last_name'],
+                    'phone' => $data['phone'],
+                    'role' => $data['role'],
+                    'password' => Hash::make($data['password']),
+                    'otp_hash' => Hash::make($otp),
+                    'resend_count' => 0,
+                    'last_sent_at' => null,
+                    'expires_at' => now()->addMinutes(10),
+                    'created_at' => now(),
+                    'updated_at' => now(),
+                ]
+            );
         } catch (QueryException $exception) {
             Log::error('Échec de la base de données pendant l’inscription provisoire.', [
                 'email' => $data['email'],
@@ -83,25 +81,36 @@ class AuthController extends Controller
                 'La préparation de l’inscription a échoué côté base de données. Vérifiez que toutes les migrations ont été exécutées.',
                 503
             );
+        }
+
+        try {
+            $this->sendRegistrationOtp($data['email'], $data['first_name'], $otp);
+            DB::table('pending_registrations')
+                ->where('email', $data['email'])
+                ->update(['last_sent_at' => now(), 'updated_at' => now()]);
         } catch (TransportExceptionInterface $exception) {
             Log::error('Échec SMTP pendant l’envoi de l’OTP d’inscription.', [
                 'email' => $data['email'],
-                'exception' => $exception,
+                'mailer' => config('mail.default'),
+                'host' => config('mail.mailers.smtp.host'),
+                'error' => $exception->getMessage(),
             ]);
 
             return ApiResponse::error(
-                'Le serveur e-mail n’a pas pu envoyer le code de vérification. Vérifiez les paramètres SMTP.',
-                503
+                'Le code n’a pas pu être envoyé par e-mail. Réessayez ou vérifiez la configuration SMTP.',
+                503,
+                ['email_delivery' => ['Échec de l’envoi du code de vérification.']]
             );
         } catch (Throwable $exception) {
-            Log::error('Échec inattendu pendant l’inscription provisoire.', [
+            Log::error('Échec inattendu pendant l’envoi de l’OTP d’inscription.', [
                 'email' => $data['email'],
-                'exception' => $exception,
+                'error' => $exception->getMessage(),
             ]);
 
             return ApiResponse::error(
-                'L’inscription provisoire n’a pas pu être préparée. Consultez les journaux du serveur.',
-                503
+                'Le code n’a pas pu être envoyé par e-mail. Réessayez dans un instant.',
+                503,
+                ['email_delivery' => ['Échec de l’envoi du code de vérification.']]
             );
         }
 
@@ -376,14 +385,29 @@ class AuthController extends Controller
             }
         }
         $otp = (string) random_int(100000, 999999);
-        DB::table('pending_registrations')->where('id', $pending->id)->update([
-            'otp_hash' => Hash::make($otp),
-            'resend_count' => (int) $pending->resend_count + 1,
-            'last_sent_at' => now(),
-            'expires_at' => now()->addMinutes(10),
-            'updated_at' => now(),
-        ]);
-        $this->sendRegistrationOtp($pending->email, $pending->first_name, $otp);
+        try {
+            $this->sendRegistrationOtp($pending->email, $pending->first_name, $otp);
+            DB::table('pending_registrations')->where('id', $pending->id)->update([
+                'otp_hash' => Hash::make($otp),
+                'resend_count' => (int) $pending->resend_count + 1,
+                'last_sent_at' => now(),
+                'expires_at' => now()->addMinutes(10),
+                'updated_at' => now(),
+            ]);
+        } catch (TransportExceptionInterface $exception) {
+            Log::error('Échec SMTP pendant le renvoi de l’OTP d’inscription.', [
+                'email' => $pending->email,
+                'mailer' => config('mail.default'),
+                'host' => config('mail.mailers.smtp.host'),
+                'error' => $exception->getMessage(),
+            ]);
+
+            return ApiResponse::error(
+                'Le nouveau code n’a pas pu être envoyé par e-mail. L’ancien code reste valable jusqu’à son expiration.',
+                503,
+                ['email_delivery' => ['Échec du renvoi du code de vérification.']]
+            );
+        }
 
         return ApiResponse::success([
             'sandbox_otp' => app()->environment(['local', 'testing']) ? $otp : null,
@@ -395,9 +419,7 @@ class AuthController extends Controller
 
     private function sendRegistrationOtp(string $email, string $firstName, string $code): void
     {
-        Mail::raw("Bonjour {$firstName},\n\nVotre code de vérification VIMMO est : {$code}\n\nCe code expire dans 10 minutes. Votre compte ne sera créé qu'après validation de ce code.", function ($message) use ($email): void {
-            $message->to($email)->subject('Votre code de vérification VIMMO');
-        });
+        Mail::to($email)->send(new OneTimeCodeMail($firstName, $code));
     }
 
     private function issueOtp(User $user, string $purpose = 'registration', int $resendCount = 0): string
@@ -405,19 +427,9 @@ class AuthController extends Controller
         $code = (string) random_int(100000, 999999);
         DB::table('otp_codes')->where('user_id', $user->id)->where('purpose', $purpose)->whereNull('used_at')->update(['used_at' => now(), 'updated_at' => now()]);
         DB::table('otp_codes')->insert(['user_id' => $user->id, 'destination' => $user->email, 'purpose' => $purpose, 'code_hash' => Hash::make($code), 'resend_count' => $resendCount, 'last_sent_at' => now(), 'expires_at' => now()->addMinutes(10), 'created_at' => now(), 'updated_at' => now()]);
-        $subject = match ($purpose) {
-            'password_reset' => 'Réinitialisation de votre mot de passe VIMMO',
-            'family_activation' => 'Activation de votre espace familial VIMMO',
-            default => 'Votre code de vérification VIMMO',
-        };
-        $action = match ($purpose) {
-            'password_reset' => 'réinitialisation de mot de passe',
-            'family_activation' => 'activation de votre espace familial',
-            default => 'vérification',
-        };
-        Mail::raw("Bonjour {$user->first_name},\n\nVotre code de {$action} VIMMO est : {$code}\n\nCe code expire dans 10 minutes. Si vous n'êtes pas à l'origine de cette demande, ignorez ce message.", function ($message) use ($user, $subject): void {
-            $message->to($user->email)->subject($subject);
-        });
+        Mail::to($user->email)->send(
+            new OneTimeCodeMail($user->first_name ?: $user->name, $code, $purpose)
+        );
 
         return $code;
     }

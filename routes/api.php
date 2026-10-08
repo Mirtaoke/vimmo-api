@@ -138,6 +138,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('/conversations/{conversation}/messages', [ChatController::class, 'send']);
     Route::get('/media/{media}/download', [PatrimonyController::class, 'download']);
     Route::get('/media/{media}/preview', [PatrimonyController::class, 'preview']);
+    Route::get('/media/{media}/stream', [PatrimonyController::class, 'stream']);
     Route::get('/media/{media}/chunks', [PatrimonyController::class, 'downloadChunk']);
     Route::get('/organizer/events', [EventController::class, 'mine'])->middleware('role:organizer');
     Route::get('/organizer/sales', [EventController::class, 'sales'])->middleware('role:organizer');

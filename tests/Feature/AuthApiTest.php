@@ -2,15 +2,25 @@
 
 namespace Tests\Feature;
 
+use App\Mail\OneTimeCodeMail;
 use App\Models\Listing;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Mail;
 use Tests\TestCase;
 
 class AuthApiTest extends TestCase
 {
     use RefreshDatabase;
+
+    public function test_otp_email_template_contains_the_code_and_expiration(): void
+    {
+        $html = (new OneTimeCodeMail('Nadia', '123456'))->render();
+
+        $this->assertStringContainsString('123456', $html);
+        $this->assertStringContainsString('10 minutes', $html);
+    }
 
     public function test_validation_errors_use_french_business_labels(): void
     {
@@ -24,6 +34,8 @@ class AuthApiTest extends TestCase
 
     public function test_registration_stays_pending_until_otp_is_verified(): void
     {
+        Mail::fake();
+
         $this->postJson('/api/auth/register', ['first_name' => 'Nadia', 'last_name' => 'Kiki', 'email' => 'nadia@example.com', 'phone' => '97001122', 'role' => 'seeker', 'password' => 'password', 'password_confirmation' => 'password'])
             ->assertCreated()
             ->assertJsonPath('success', true)
@@ -35,7 +47,15 @@ class AuthApiTest extends TestCase
             ->assertJsonMissingPath('data.user');
 
         $this->assertDatabaseMissing('users', ['email' => 'nadia@example.com']);
-        $this->assertDatabaseHas('pending_registrations', ['email' => 'nadia@example.com']);
+        $this->assertDatabaseHas('pending_registrations', [
+            'email' => 'nadia@example.com',
+            'role' => 'seeker',
+        ]);
+        Mail::assertSent(
+            OneTimeCodeMail::class,
+            fn (OneTimeCodeMail $mail): bool => $mail->hasTo('nadia@example.com')
+                && $mail->purpose === 'registration'
+        );
     }
 
     public function test_public_can_list_published_listings(): void
